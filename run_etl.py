@@ -111,7 +111,7 @@ def get_sql_connection():
         database = os.getenv('SQL_DATABASE')
         username = os.getenv('SQL_USERNAME')
         password = os.getenv('SQL_PASSWORD')
-        driver = os.getenv('SQL_DRIVER', '{ODBC Driver 17 for SQL Server}')
+        driver = os.getenv('SQL_DRIVER', '{ODBC Driver 18 for SQL Server}')
         
         connection_string = f"DRIVER={driver};SERVER={server};DATABASE={database};UID={username};PWD={password}"
         logging.info(f"Connecting to SQL Server: {server}, Database: {database}")
