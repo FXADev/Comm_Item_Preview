@@ -36,3 +36,5 @@ INNER JOIN bridge."public"."agency" agency ON agency.agency_key = adj.agency_key
 INNER JOIN bridge."public"."supplier" supplier ON supplier.supplier_key = adj.supplier_key
 INNER JOIN bridge."public"."commission_adjustment_type" adj_type ON adj_type.commission_adjustment_type_key = adj.commission_adjustment_type_key
 WHERE run.run_is_closed = false
+   OR (run.run_is_closed = true AND run.run_date_closed >= DATEADD(day, -4, CURRENT_DATE))
+   

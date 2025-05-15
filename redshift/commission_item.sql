@@ -62,3 +62,4 @@ INNER JOIN bridge."public"."rep" rep ON rep.rep_key = ci.rep_key
 INNER JOIN bridge."public"."agency" agency ON rep.rep_agency_id = agency.agency_id
 INNER JOIN bridge."public"."product" product ON product.product_key = ci.product_key
 WHERE run.run_is_closed = false
+   OR (run.run_is_closed = true AND run.run_date_closed >= DATEADD(day, -4, CURRENT_DATE))
