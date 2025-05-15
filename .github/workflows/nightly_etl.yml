@@ -34,6 +34,16 @@ jobs:
         sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18
         echo 'export PATH="$PATH:/opt/mssql-tools18/bin"' >> ~/.bashrc
         
+    - name: Get start time
+      id: start-time
+      run: echo "startTime=$(date +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
+      
+    - name: Set job outputs
+      id: job-info
+      run: |
+        echo "repository=${{ github.repository }}" >> $GITHUB_OUTPUT
+        echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+
     - name: Run ETL process
       env:
         # Use GitHub secrets for all credentials
@@ -54,19 +64,65 @@ jobs:
       run: |
         python run_etl.py
         
+    # Send email notification on successful completion of the ETL process
+    - name: Notify on success
+      if: success()
+      uses: dawidd6/action-send-mail@v3
+      with:
+        # Gmail SMTP configuration
+        server_address: smtp.gmail.com
+        server_port: 587
+        security: tls
+        # Use the exact secret names created in GitHub
+        username: ${{ secrets.smtp_username }}
+        password: ${{ secrets.smtp_password }}
+        subject: "✅ Commission Preview ETL Success"
+        body: |
+          ## ✅ Commission Preview ETL Success
+          
+          The nightly ETL process completed successfully.
+          
+          **Repository:** ${{ steps.job-info.outputs.repository }}
+          **Branch:** ${{ steps.job-info.outputs.branch }}
+          **Start time:** ${{ steps.start-time.outputs.startTime }}
+          **End time:** $(date +'%Y-%m-%d %H:%M:%S UTC')
+          
+          ### View the full run details:
+          https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        # Send emails to all recipients in the notification list
+        to: ${{ secrets.NOTIFICATION_EMAILS }}
+        from: Commission ETL GitHub Action
+        content_type: text/html
+        
+    # Send email notification when ETL process fails
     - name: Notify on failure
       if: failure()
       uses: dawidd6/action-send-mail@v3
       with:
-        server_address: ${{ secrets.SMTP_SERVER }}
-        server_port: ${{ secrets.SMTP_PORT }}
-        username: ${{ secrets.SMTP_USERNAME }}
-        password: ${{ secrets.SMTP_PASSWORD }}
+        # Gmail SMTP configuration
+        server_address: smtp.gmail.com
+        server_port: 587
+        security: tls
+        # Use the exact secret names created in GitHub
+        username: ${{ secrets.smtp_username }}
+        password: ${{ secrets.smtp_password }}
         subject: "⚠️ Commission Preview ETL Failure"
         body: |
-          The nightly Commission Preview ETL process failed.
+          ## ⚠️ Commission Preview ETL Failure
           
-          Check the GitHub Actions logs for details:
+          The nightly ETL process failed.
+          
+          **Repository:** ${{ steps.job-info.outputs.repository }}
+          **Branch:** ${{ steps.job-info.outputs.branch }}
+          **Start time:** ${{ steps.start-time.outputs.startTime }}
+          **End time:** $(date +'%Y-%m-%d %H:%M:%S UTC')
+          
+          ### Error Information
+          Please check the GitHub Actions logs for detailed error messages.
+          
+          ### View the full run details:
           https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
-        to: ${{ secrets.NOTIFICATION_EMAIL }}
+        # Send emails to all recipients in the notification list
+        to: ${{ secrets.NOTIFICATION_EMAILS }}
         from: Commission ETL GitHub Action
+        content_type: text/html
