@@ -64,6 +64,10 @@ jobs:
       run: |
         python run_etl.py
         
+    - name: Get end time
+      id: end-time
+      run: echo "endTime=$(date +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
+        
     # Send email notification on successful completion of the ETL process
     - name: Notify on success
       if: success()
@@ -85,7 +89,7 @@ jobs:
           **Repository:** ${{ steps.job-info.outputs.repository }}
           **Branch:** ${{ steps.job-info.outputs.branch }}
           **Start time:** ${{ steps.start-time.outputs.startTime }}
-          **End time:** $(date +'%Y-%m-%d %H:%M:%S UTC')
+          **End time:** ${{ steps.end-time.outputs.endTime }}
           
           ### View the full run details:
           https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -115,7 +119,7 @@ jobs:
           **Repository:** ${{ steps.job-info.outputs.repository }}
           **Branch:** ${{ steps.job-info.outputs.branch }}
           **Start time:** ${{ steps.start-time.outputs.startTime }}
-          **End time:** $(date +'%Y-%m-%d %H:%M:%S UTC')
+          **End time:** ${{ steps.end-time.outputs.endTime }}
           
           ### Error Information
           Please check the GitHub Actions logs for detailed error messages.
