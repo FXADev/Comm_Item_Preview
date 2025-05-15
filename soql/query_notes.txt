@@ -1,0 +1,36 @@
+# Salesforce SOQL Query Field Notes
+
+## Agency Query (agecy.soql)
+- Id: Salesforce ID
+- Name: Salesforce Agency Name
+- Agency_ID__c: RPM Agency ID Prefixed with "BPT3__"
+- RPM_Agency_Name__c: RPM Agency Name
+
+## Agency Company Identifier Query (agency_company_iden.soql)
+- Id: Salesforce ID
+- Company__c: Salesforce Company ID
+- Agency__c: Salesforce Agency ID
+- Agency_ID__c: RPM Agency ID not Prefixed with "BPT3__"
+- Company_ID__c: RPM Company ID not Prefixed with "BPT3__"
+
+## Commission Account Query (commission_account.soql)
+- Id: Salesforce Account ID
+- Name: Salesforce Account Name
+- Account_ID__c: RPM Account ID not Prefixed with "BPT3__"
+- Supplier__c: Salesforce Supplier ID
+- Primary_Agency__c: Salesforce Agency ID
+- Primary_Company__c: Salesforce Company ID
+- Full_Account_Number__c: RPM Full Account Number
+
+## Company Query (company.soql)
+- Id: Salesforce ID
+- Company_ID__c: RPM Company ID Prefixed with "BPT3__"
+
+## Strategist Query (strategist.soql)
+- Id: Salesforce ID
+- Sales_Rep_ID__c: RPM Rep ID Prefixed with "BPT3__"
+- Agency_Id__c: Salesforce Agency ID
+
+## Supplier Query (supplier.soql)
+- Id: Salesforce ID
+- Supplier_ID__c: RPM Supplier ID Prefixed with "BPT3__"

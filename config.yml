@@ -1,0 +1,24 @@
+redshift:
+  queries:
+    - name: commission_items
+      file: redshift/commission_item.sql
+    - name: referral_payments
+      file: redshift/referral_items.sql
+    - name: adjustment_items
+      file: redshift/adjustment_items.sql
+
+salesforce:
+  login: {}   # creds come from .env
+  queries:
+    - name: agency
+      file: soql/agecy.soql
+    - name: agency_company_identifier
+      file: soql/agency_company_iden.soql
+    - name: commission_account
+      file: soql/commission_account.soql
+    - name: company
+      file: soql/company.soql
+    - name: strategist
+      file: soql/strategist.soql
+    - name: supplier
+      file: soql/supplier.soql

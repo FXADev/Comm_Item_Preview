@@ -1,0 +1,8 @@
+SELECT 
+    Id,
+    Sales_Rep_ID__c,
+    Agency_Id__c
+FROM 
+    Strategist__c 
+WHERE 
+    IsDeleted=False

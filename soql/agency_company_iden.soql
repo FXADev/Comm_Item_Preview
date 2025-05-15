@@ -1,0 +1,10 @@
+SELECT 
+    Id,
+    Company__c,
+    Agency__c,
+    Agency_ID__c,
+    Company_ID__c
+FROM 
+    Agency_Company_Identifier__c 
+WHERE 
+    IsDeleted=False

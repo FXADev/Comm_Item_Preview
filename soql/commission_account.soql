@@ -1,0 +1,12 @@
+SELECT 
+    Id,
+    Name,
+    Account_ID__c,
+    Supplier__c,
+    Primary_Agency__c,
+    Primary_Company__c,
+    Full_Account_Number__c
+FROM 
+    Commission_Account__c
+WHERE 
+    IsDeleted=False

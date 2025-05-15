@@ -1,0 +1,7 @@
+SELECT 
+    Id,
+    Company_ID__c
+FROM 
+    Company__c 
+WHERE 
+    IsDeleted=False

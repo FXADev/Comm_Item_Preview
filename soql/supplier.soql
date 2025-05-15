@@ -1,0 +1,7 @@
+SELECT 
+    Id,
+    Supplier_ID__c
+FROM 
+    Supplier__c 
+WHERE 
+    IsDeleted=False

@@ -1,0 +1,7 @@
+SELECT 
+    Id,
+    Name,
+    Agency_ID__c,
+    RPM_Agency_Name__c
+FROM Agency__c
+WHERE IsDeleted = False
