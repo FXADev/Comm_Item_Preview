@@ -76,7 +76,7 @@ jobs:
         # Gmail SMTP configuration
         server_address: smtp.gmail.com
         server_port: 587
-        secure: true
+        secure: false
         # Use the exact secret names created in GitHub
         username: ${{ secrets.smtp_username }}
         password: ${{ secrets.smtp_password }}
@@ -106,7 +106,7 @@ jobs:
         # Gmail SMTP configuration
         server_address: smtp.gmail.com
         server_port: 587
-        secure: true
+        secure: false
         # Use the exact secret names created in GitHub
         username: ${{ secrets.smtp_username }}
         password: ${{ secrets.smtp_password }}
