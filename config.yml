@@ -11,7 +11,7 @@ salesforce:
   login: {}   # creds come from .env
   queries:
     - name: agency
-      file: soql/agecy.soql
+      file: soql/agency.soql
     - name: agency_company_identifier
       file: soql/agency_company_iden.soql
     - name: commission_account
