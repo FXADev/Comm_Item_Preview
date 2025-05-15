@@ -1,0 +1,63 @@
+name: Nightly ETL Process
+
+on:
+  schedule:
+    # Run at 5:00 AM EST (9:00 UTC)
+    - cron: '0 9 * * *'
+  workflow_dispatch:
+    # Allow manual trigger
+
+jobs:
+  run-etl:
+    runs-on: ubuntu-latest
+    environment: production
+    
+    steps:
+    - uses: actions/checkout@v3
+    
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.lock
+        
+    - name: Run ETL process
+      env:
+        # Use GitHub secrets for all credentials
+        REDSHIFT_HOST: ${{ secrets.REDSHIFT_HOST }}
+        REDSHIFT_PORT: ${{ secrets.REDSHIFT_PORT }}
+        REDSHIFT_DATABASE: ${{ secrets.REDSHIFT_DATABASE }}
+        REDSHIFT_USER: ${{ secrets.REDSHIFT_USER }}
+        REDSHIFT_PASSWORD: ${{ secrets.REDSHIFT_PASSWORD }}
+        REDSHIFT_SCHEMA: ${{ secrets.REDSHIFT_SCHEMA }}
+        SF_USERNAME: ${{ secrets.SF_USERNAME }}
+        SF_PASSWORD: ${{ secrets.SF_PASSWORD }}
+        SF_SECURITY_TOKEN: ${{ secrets.SF_SECURITY_TOKEN }}
+        SQL_SERVER: ${{ secrets.SQL_SERVER }}
+        SQL_DATABASE: ${{ secrets.SQL_DATABASE }}
+        SQL_USERNAME: ${{ secrets.SQL_USERNAME }}
+        SQL_PASSWORD: ${{ secrets.SQL_PASSWORD }}
+        SQL_DRIVER: ${{ secrets.SQL_DRIVER }}
+      run: |
+        python run_etl.py
+        
+    - name: Notify on failure
+      if: failure()
+      uses: dawidd6/action-send-mail@v3
+      with:
+        server_address: ${{ secrets.SMTP_SERVER }}
+        server_port: ${{ secrets.SMTP_PORT }}
+        username: ${{ secrets.SMTP_USERNAME }}
+        password: ${{ secrets.SMTP_PASSWORD }}
+        subject: "⚠️ Commission Preview ETL Failure"
+        body: |
+          The nightly Commission Preview ETL process failed.
+          
+          Check the GitHub Actions logs for details:
+          https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        to: ${{ secrets.NOTIFICATION_EMAIL }}
+        from: Commission ETL GitHub Action
