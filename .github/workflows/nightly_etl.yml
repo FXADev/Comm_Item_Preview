@@ -34,15 +34,11 @@ jobs:
         sudo ACCEPT_EULA=Y apt-get install -y mssql-tools18
         echo 'export PATH="$PATH:/opt/mssql-tools18/bin"' >> ~/.bashrc
         
-    - name: Get start time
-      id: start-time
-      run: echo "startTime=$(date +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
-      
-    - name: Set job outputs
-      id: job-info
+    - name: Set workflow information
       run: |
-        echo "repository=${{ github.repository }}" >> $GITHUB_OUTPUT
-        echo "branch=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+        echo "startTime=$(date +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_ENV
+        echo "repository=${{ github.repository }}" >> $GITHUB_ENV
+        echo "branch=${{ github.ref_name }}" >> $GITHUB_ENV
 
     - name: Run ETL process
       env:
@@ -64,30 +60,23 @@ jobs:
       run: |
         python etl_main.py
         
-    - name: Get end time
-      id: end-time
-      run: echo "endTime=$(date +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_OUTPUT
+    - name: Record end time
+      run: echo "endTime=$(date +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_ENV
         
     - name: Generate ETL metrics for email
-      id: metrics
       if: success()
       run: |
         # Ensure metrics directory exists
         mkdir -p metrics
         python scripts/generate_email_metrics.py --output email_metrics.html
         
-    - name: Read metrics for email
-      id: read-metrics
+    - name: Check for metrics file
       if: success()
       run: |
         if [ -f email_metrics.html ]; then
-          echo "metrics_exist=true" >> $GITHUB_OUTPUT
-          TOTAL_QUERIED=$(grep -oP '(?<=Total rows queried: )[0-9,]+' email_metrics.html || echo "N/A")
-          TOTAL_INSERTED=$(grep -oP '(?<=Total rows inserted: )[0-9,]+' email_metrics.html || echo "N/A")
-          echo "total_queried=$TOTAL_QUERIED" >> $GITHUB_OUTPUT
-          echo "total_inserted=$TOTAL_INSERTED" >> $GITHUB_OUTPUT
+          echo "metrics_exist=true" >> $GITHUB_ENV
         else
-          echo "metrics_exist=false" >> $GITHUB_OUTPUT
+          echo "metrics_exist=false" >> $GITHUB_ENV
         fi
         
     # Send email notification on successful completion of the ETL process
@@ -102,21 +91,21 @@ jobs:
         # Use the exact secret names created in GitHub
         username: ${{ secrets.smtp_username }}
         password: ${{ secrets.smtp_password }}
-        subject: "✅ Commission Preview ETL Success (${{ steps.read-metrics.outputs.total_queried || 'N/A' }} rows processed)"
+        subject: "✅ Commission Preview ETL Success (${{ env.total_queried || 'N/A' }} rows processed)"
         body: |
           ## ✅ Commission Preview ETL Success
           
           The nightly ETL process completed successfully.
           
-          **Repository:** ${{ steps.job-info.outputs.repository }}
-          **Branch:** ${{ steps.job-info.outputs.branch }}
-          **Start time:** ${{ steps.start-time.outputs.startTime }}
-          **End time:** ${{ steps.end-time.outputs.endTime }}
+          **Repository:** ${{ env.repository }}
+          **Branch:** ${{ env.branch }}
+          **Start time:** ${{ env.startTime }}
+          **End time:** ${{ env.endTime }}
           
-          {% if steps.read-metrics.outputs.metrics_exist == 'true' %}
+          {% if env.metrics_exist == 'true' %}
           ### ETL Metrics Summary
-          - **Total Rows Queried:** ${{ steps.read-metrics.outputs.total_queried || 'N/A' }}
-          - **Total Rows Inserted:** ${{ steps.read-metrics.outputs.total_inserted || 'N/A' }}
+          - **Total Rows Queried:** ${{ env.total_queried || 'N/A' }}
+          - **Total Rows Inserted:** ${{ env.total_inserted || 'N/A' }}
           
           Detailed metrics table is included below.
           {% endif %}
@@ -129,7 +118,7 @@ jobs:
         convert_markdown: true
         priority: high
         attachments: |
-          {% if steps.read-metrics.outputs.metrics_exist == 'true' %}
+          {% if env.metrics_exist == 'true' %}
           email_metrics.html
           {% endif %}
         
@@ -151,10 +140,10 @@ jobs:
           
           The nightly ETL process failed.
           
-          **Repository:** ${{ steps.job-info.outputs.repository }}
-          **Branch:** ${{ steps.job-info.outputs.branch }}
-          **Start time:** ${{ steps.start-time.outputs.startTime }}
-          **End time:** ${{ steps.end-time.outputs.endTime }}
+          **Repository:** ${{ env.repository }}
+          **Branch:** ${{ env.branch }}
+          **Start time:** ${{ env.startTime }}
+          **End time:** ${{ env.endTime }}
           
           ### Error Information
           Please check the GitHub Actions logs for detailed error messages.

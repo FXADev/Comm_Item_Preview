@@ -49,15 +49,29 @@ def main():
         f.write(html_content)
     
     print(f"Metrics HTML generated successfully: {args.output}")
-    print(f"Total rows queried: {metrics['summary']['total_queried']}")
-    print(f"Total rows inserted: {metrics['summary']['total_inserted']}")
+    # Only print these in non-GitHub environments to avoid duplication
+    if not os.environ.get('GITHUB_ENV'):
+        print(f"Total rows queried: {metrics['summary']['total_queried']}")
+        print(f"Total rows inserted: {metrics['summary']['total_inserted']}")
+    else:
+        print("Metrics written to GitHub environment file.")
     
-    # Return data suitable for GitHub Actions environment variables
+    # Return data suitable for GitHub Actions environment files
     # These environment variables can be used to include key metrics in email subject lines
-    print(f"::set-output name=total_queried::{metrics['summary']['total_queried']}")
-    print(f"::set-output name=total_inserted::{metrics['summary']['total_inserted']}")
-    print(f"::set-output name=timestamp::{metrics['timestamp']}")
-    print(f"::set-output name=batch_id::{metrics['batch_id']}")
+    # Using new environment files approach instead of deprecated set-output
+    github_env = os.environ.get('GITHUB_ENV')
+    if github_env:
+        with open(github_env, 'a') as f:
+            f.write(f"total_queried={metrics['summary']['total_queried']}\n")
+            f.write(f"total_inserted={metrics['summary']['total_inserted']}\n")
+            f.write(f"metrics_timestamp={metrics['timestamp']}\n")
+            f.write(f"metrics_batch_id={metrics['batch_id']}\n")
+    else:
+        # For local running, just print metrics
+        print(f"Total rows queried: {metrics['summary']['total_queried']}")
+        print(f"Total rows inserted: {metrics['summary']['total_inserted']}")
+        print(f"Timestamp: {metrics['timestamp']}")
+        print(f"Batch ID: {metrics['batch_id']}")
     
     return 0
 
