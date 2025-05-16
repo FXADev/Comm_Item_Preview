@@ -8,7 +8,9 @@ This ETL pipeline extracts commission data from Redshift and Salesforce, loads i
 2. **Salesforce → SQL Server**: Extracts configured objects (agencies, accounts, companies, etc.)
 3. **Staging refresh**: Automatically truncates and reloads all staging tables
 4. **Data tracking**: Adds `etl_batch_id` and `extracted_at` to all records for lineage
-5. **Credential security**: Sources all connection parameters from `.env` file
+5. **Metrics collection**: Tracks row counts for ETL process monitoring and reporting
+6. **Email notifications**: Sends detailed execution reports with metrics tables
+7. **Credential security**: Sources all connection parameters from `.env` file
 
 ## Project Structure
 
@@ -27,12 +29,17 @@ This ETL pipeline extracts commission data from Redshift and Salesforce, loads i
   - **`config_loader.py`**: Manages configuration loading and validation
   - **`logger.py`**: Sets up logging
   - **`common.py`**: Contains shared functions
+  - **`notification_helper.py`**: Generates metrics reports and tables
+- **`scripts/`**: Utility scripts
+  - **`generate_email_metrics.py`**: Creates HTML metrics tables for email reports
 
 ### Configuration
 - **`config/`**: Configuration directory
   - **`config.yml`**: Configuration file defining data sources and queries
 - **`redshift/`**: SQL queries for Redshift extraction
 - **`soql/`**: SOQL queries for Salesforce extraction
+- **`.github/workflows/`**: GitHub Actions workflow configurations
+  - **`nightly_etl.yml`**: Automated ETL execution and notifications
 - **`.env`**: Environment file containing all credentials (not in repo)
 - **`.gitignore`**: Prevents sensitive files from being committed
 - **`.env.example`**: Template for required environment variables
@@ -88,6 +95,10 @@ python etl.py                    # Simpler version with less error handling
 1. Step 1: `cmd /c "cd C:\path\to\project && run_etl.bat"`
 2. Step 2: `EXEC dbo.sp_commission_preview_transform` (optional SQL transformation)
 
+*GitHub Actions:*
+- Automated nightly runs via the `.github/workflows/nightly_etl.yml` configuration
+- Sends email notifications with execution metrics to configured recipients
+
 ## Configuration
 
 ### Adding New Data Sources
@@ -108,4 +119,6 @@ python etl.py                    # Simpler version with less error handling
 - **Execution tracing**: Each ETL run generates a unique `etl_batch_id` timestamp for data lineage
 - **Credential issues**: Run with `--manual` flag to test without connections
 - **Data verification**: Query staging tables with `etl_batch_id` to trace data lineage
+- **Metrics reports**: Check email notifications for row counts and processing statistics
+- **Row count verification**: Check JSON files in the `metrics/` directory for detailed metrics
 - **Modular architecture**: See `docs/README_MODULAR_REFACTOR.md` for detailed implementation information
