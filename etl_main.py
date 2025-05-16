@@ -7,6 +7,7 @@ This script coordinates the entire ETL workflow by:
 2. Verifying credentials
 3. Extracting data from Redshift and Salesforce 
 4. Loading data to SQL Server staging tables
+5. Generating metrics for email notifications
 
 The implementation follows a modular approach for better maintainability and testability.
 
@@ -27,6 +28,7 @@ from utils.common import get_sql_connection, prepare_staging_tables
 from extractors.redshift_extractor import execute_redshift_queries
 from extractors.salesforce_extractor import execute_salesforce_queries
 from loaders.sql_server_loader import load_data_to_sql_server
+from utils.notification_helper import save_etl_metrics, generate_metrics_table_markdown
 
 
 def main():
@@ -34,7 +36,7 @@ def main():
     Main ETL process orchestration function.
     
     This function coordinates the entire ETL workflow and serves as the
-    entry point for the ETL process.
+    entry point for the ETL process. It also collects metrics for email notifications.
     """
     # Setup command-line arguments
     parser = argparse.ArgumentParser(description='Run Bridgepointe Commission Preview ETL')
@@ -81,13 +83,45 @@ def main():
     load_to_sql = not args.manual
     sql_conn = None
     
+    # Initialize metrics dictionary to track row counts
+    etl_metrics = {
+        'sources': {
+            'redshift': {},
+            'salesforce': {}
+        },
+        'summary': {
+            'total_queried': 0,
+            'total_inserted': 0
+        }
+    }
+    
     try:
         # Extract data from sources
         logging.info("Extracting data from Redshift")
         redshift_results = execute_redshift_queries(config, batch_id, args.manual)
         
+        # Track Redshift query row counts
+        for query_name, result in redshift_results.items():
+            rows_queried = len(result['data']) if result['data'] else 0
+            etl_metrics['sources']['redshift'][query_name] = {
+                'rows_queried': rows_queried,
+                'rows_inserted': 0  # Will be updated after insertion
+            }
+            etl_metrics['summary']['total_queried'] += rows_queried
+            logging.info(f"Redshift query {query_name} returned {rows_queried} rows")
+        
         logging.info("Extracting data from Salesforce")
         salesforce_results = execute_salesforce_queries(config, batch_id, args.manual)
+        
+        # Track Salesforce query row counts
+        for query_name, result in salesforce_results.items():
+            rows_queried = len(result['data']) if result['data'] else 0
+            etl_metrics['sources']['salesforce'][query_name] = {
+                'rows_queried': rows_queried,
+                'rows_inserted': 0  # Will be updated after insertion
+            }
+            etl_metrics['summary']['total_queried'] += rows_queried
+            logging.info(f"Salesforce query {query_name} returned {rows_queried} rows")
         
         # Load data to SQL Server if we have results and not in manual mode
         if load_to_sql and (redshift_results or salesforce_results):
@@ -105,6 +139,14 @@ def main():
                 logging.info("Loading Redshift data to staging tables")
                 redshift_load_summary = load_data_to_sql_server(sql_conn, redshift_results, batch_id, 'redshift')
                 for table, rows in redshift_load_summary.items():
+                    # Extract query name from table name (remove prefix)
+                    query_name = table.replace('dbo.stg_', '')
+                    
+                    # Update metrics with insertion counts
+                    if query_name in etl_metrics['sources']['redshift']:
+                        etl_metrics['sources']['redshift'][query_name]['rows_inserted'] = rows
+                        etl_metrics['summary']['total_inserted'] += rows
+                    
                     logging.info(f"Loaded {rows} rows into {table}")
             
             # Load Salesforce data to SQL Server
@@ -112,6 +154,14 @@ def main():
                 logging.info("Loading Salesforce data to staging tables")
                 salesforce_load_summary = load_data_to_sql_server(sql_conn, salesforce_results, batch_id, 'salesforce')
                 for table, rows in salesforce_load_summary.items():
+                    # Extract query name from table name (remove prefix)
+                    query_name = table.replace('dbo.stg_sf_', '')
+                    
+                    # Update metrics with insertion counts
+                    if query_name in etl_metrics['sources']['salesforce']:
+                        etl_metrics['sources']['salesforce'][query_name]['rows_inserted'] = rows
+                        etl_metrics['summary']['total_inserted'] += rows
+                    
                     logging.info(f"Loaded {rows} rows into {table}")
             
             logging.info("Data loading to SQL Server completed")
@@ -126,6 +176,16 @@ def main():
             sql_conn.close()
             logging.info("SQL Server connection closed")
     
+    # Save metrics for notification
+    metrics_file = save_etl_metrics(etl_metrics, batch_id)
+    if metrics_file:
+        logging.info(f"ETL metrics saved to {metrics_file}")
+        
+        # Generate metrics table for console display
+        metrics_table = generate_metrics_table_markdown(etl_metrics)
+    else:
+        metrics_table = "No metrics available"
+    
     logging.info("ETL process completed")
     
     if args.manual:
@@ -135,6 +195,8 @@ def main():
         print("2. Executed the queries defined in config.yml")
         print("3. Loaded results into staging tables")
         print(f"4. Used batch ID {batch_id} for tracking")
+        print("\n=== ETL METRICS (SIMULATED) ===")
+        print(metrics_table)
     else:
         print("\n=== ETL PROCESS COMPLETE ===")
         print(f"Process completed successfully with batch ID: {batch_id}")
@@ -142,6 +204,8 @@ def main():
         if load_to_sql:
             print("Data has been loaded to SQL Server staging tables")
             print("You can now query the staging tables to verify the data")
+        print("\n=== ETL METRICS ===")
+        print(metrics_table)
 
 
 if __name__ == "__main__":
