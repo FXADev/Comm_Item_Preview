@@ -102,13 +102,11 @@ jobs:
           **Start time:** ${{ env.startTime }}
           **End time:** ${{ env.endTime }}
           
-          {% if env.metrics_exist == 'true' %}
           ### ETL Metrics Summary
           - **Total Rows Queried:** ${{ env.total_queried || 'N/A' }}
           - **Total Rows Inserted:** ${{ env.total_inserted || 'N/A' }}
           
           Detailed metrics table is included below.
-          {% endif %}
           
           ### View the full run details:
           https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
