@@ -11,15 +11,38 @@ This ETL pipeline extracts commission data from Redshift and Salesforce, loads i
 5. **Credential security**: Sources all connection parameters from `.env` file
 
 ## Project Structure
-- **`run_etl.py`**: Primary ETL orchestration script with full error handling
+
+### Core Files
+- **`run_etl.py`**: Backward compatibility wrapper for the modular ETL implementation
 - **`run_etl.bat`**: Windows batch wrapper for easy execution
-- **`config.yml`**: Configuration file defining data sources and queries
+- **`etl_main.py`**: Main orchestration module for the ETL workflow
+
+### Modular Components
+- **`extractors/`**: Data extraction modules
+  - **`redshift_extractor.py`**: Handles data extraction from Redshift
+  - **`salesforce_extractor.py`**: Handles data extraction from Salesforce
+- **`loaders/`**: Data loading modules
+  - **`sql_server_loader.py`**: Manages data loading into SQL Server
+- **`utils/`**: Utility modules
+  - **`config_loader.py`**: Manages configuration loading and validation
+  - **`logger.py`**: Sets up logging
+  - **`common.py`**: Contains shared functions
+
+### Configuration
+- **`config/`**: Configuration directory
+  - **`config.yml`**: Configuration file defining data sources and queries
 - **`redshift/`**: SQL queries for Redshift extraction
 - **`soql/`**: SOQL queries for Salesforce extraction
-- **`views/`**: SQL views for formatting extracted data
 - **`.env`**: Environment file containing all credentials (not in repo)
 - **`.gitignore`**: Prevents sensitive files from being committed
 - **`.env.example`**: Template for required environment variables
+
+### Documentation
+- **`docs/`**: Documentation directory
+  - **`sql_reference/`**: SQL reference files
+    - **`views/`**: SQL views for formatting extracted data
+  - **`README_MODULAR_REFACTOR.md`**: Detailed documentation about the modularization
+  - **`CONTRIBUTING.md`**: Guidelines for contributing to the project
 
 ## Execution Options
 
@@ -68,7 +91,7 @@ python etl.py                    # Simpler version with less error handling
 ## Configuration
 
 ### Adding New Data Sources
-*Redshift:* Add new query entry to `redshift.queries` section in `config.yml`:
+*Redshift:* Add new query entry to `redshift.queries` section in `config/config.yml`:
 ```yaml
 - name: new_table_name
   file: redshift/new_query.sql
@@ -81,7 +104,8 @@ python etl.py                    # Simpler version with less error handling
 ```
 
 ## Troubleshooting
-- **Logs**: Check the `logs/` directory for detailed execution logs
-- **Execution tracing**: Each ETL run generates a unique `etl_batch_id` timestamp
+- **Logs**: Check the `logs/` directory for detailed execution logs (older logs in `logs/archive/`)
+- **Execution tracing**: Each ETL run generates a unique `etl_batch_id` timestamp for data lineage
 - **Credential issues**: Run with `--manual` flag to test without connections
-- **Data verification**: Query staging tables with `etl_batch_id` to trace lineage
+- **Data verification**: Query staging tables with `etl_batch_id` to trace data lineage
+- **Modular architecture**: See `docs/README_MODULAR_REFACTOR.md` for detailed implementation information

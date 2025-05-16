@@ -24,6 +24,13 @@ def load_config(config_path='config.yml'):
         SystemExit: If configuration loading fails
     """
     try:
+        # Check if config file exists in the new location
+        if os.path.exists(os.path.join("config", "config.yml")):
+            config_path = os.path.join("config", "config.yml")
+        else:
+            # Fallback to original location for backward compatibility
+            config_path = "config.yml"
+            
         with open(config_path, 'r') as f:
             config = yaml.safe_load(f)
         
@@ -45,9 +52,18 @@ def load_query_from_file(file_path):
         str or None: Query content if successful, None otherwise
     """
     try:
-        with open(file_path, 'r') as f:
+        # Get the project root directory (where config might be loaded from)
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        
+        # Try paths relative to project root first
+        absolute_path = os.path.join(project_root, file_path)
+        if not os.path.exists(absolute_path):
+            # If not found, try the original path (might be absolute already)
+            absolute_path = file_path
+            
+        with open(absolute_path, 'r') as f:
             query = f.read()
-        logging.debug(f"Query loaded from {file_path}")
+        logging.debug(f"Query loaded from {absolute_path}")
         return query
     except Exception as e:
         logging.error(f"Failed to load query from {file_path}: {e}")

@@ -25,7 +25,7 @@ from etl_main import main
 if __name__ == "__main__":
     # Display a brief migration notice
     print("Using modularized ETL implementation")
-    print("See README_MODULAR_REFACTOR.md for details about the new architecture")
+    print("See docs/README_MODULAR_REFACTOR.md for details about the new architecture")
     
     # Call the main function from the etl_main module
     main()

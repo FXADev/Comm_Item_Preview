@@ -9,6 +9,8 @@ import logging
 import pandas as pd
 import pyodbc
 from datetime import datetime
+from decimal import Decimal
+import time
 
 
 def insert_to_sql_table(conn, table_name, data, columns, batch_id, batch_size=5000):
@@ -35,7 +37,7 @@ def insert_to_sql_table(conn, table_name, data, columns, batch_id, batch_size=50
         row_count = 0
         
         # Add standard audit columns
-        columns.extend(['batch_id', 'insert_ts'])
+        columns.extend(['etl_batch_id', 'extracted_at'])
         
         # Create placeholders for the SQL query
         placeholders = ', '.join(['?' for _ in range(len(columns))])
@@ -45,71 +47,108 @@ def insert_to_sql_table(conn, table_name, data, columns, batch_id, batch_size=50
         
         # Prepare batches for bulk insert
         rows_to_insert = []
-        current_timestamp = datetime.now()
+        # Format timestamp properly for SQL Server
+        current_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
+        # Optimize by preparing all data upfront instead of per batch
+        start_prep = datetime.now()
+        logging.info(f"Preparing {len(data)} rows for insertion into {table_name}")
+        
+        # Pre-process all data at once
+        modified_data = []
         for row in data:
-            # Add audit columns to row
-            row_with_audit = row.copy() if isinstance(row, list) else row
-            if isinstance(row_with_audit, list):
-                row_with_audit.extend([batch_id, current_timestamp])
-            else:
-                # Handle case where row might be a dictionary
-                row_with_audit['batch_id'] = batch_id
-                row_with_audit['insert_ts'] = current_timestamp
-                
-            rows_to_insert.append(row_with_audit)
+            # Convert tuple to list if needed
+            row_list = list(row) if isinstance(row, tuple) else row
             
-            # Execute in batches for better performance
-            if len(rows_to_insert) >= batch_size:
-                try:
-                    # Using executemany for bulk insert
-                    cursor.fast_executemany = True
-                    cursor.executemany(insert_sql, rows_to_insert)
-                    conn.commit()
-                    row_count += len(rows_to_insert)
-                    logging.debug(f"Inserted batch of {len(rows_to_insert)} rows into {table_name}")
-                    rows_to_insert = []
-                except Exception as e:
-                    # For debugging: log the data that caused the issue
-                    logging.error(f"Error during batch insert to {table_name}: {e}")
-                    
-                    # Switch to row-by-row insert for error handling
-                    logging.info("Switching to row-by-row insert for error recovery")
-                    conn.rollback()
-                    
-                    for i, single_row in enumerate(rows_to_insert):
+            # Fix decimal precision issues
+            for i, val in enumerate(row_list):
+                # Handle Decimal values to ensure they fit within SQL Server precision
+                if isinstance(val, (Decimal, float)):
+                    if val is None:
+                        row_list[i] = None
+                    else:
                         try:
-                            cursor.execute(insert_sql, single_row)
-                            conn.commit()
-                            row_count += 1
-                        except Exception as row_error:
-                            conn.rollback()
-                            logging.error(f"Error inserting row {i}: {row_error}")
-                            # Log problematic data for diagnostics (first 200 chars)
-                            logging.error(f"Problematic row data (truncated): {str(single_row)[:200]}")
-                    
-                    rows_to_insert = []
+                            # Limit to max value for decimal(18,2)
+                            max_value = 9999999999999999.99
+                            min_value = -9999999999999999.99
+                            
+                            if val > max_value:
+                                logging.warning(f"Value {val} exceeds maximum decimal(18,2) limit, capping at {max_value}")
+                                row_list[i] = max_value
+                            elif val < min_value:
+                                logging.warning(f"Value {val} below minimum decimal(18,2) limit, capping at {min_value}")
+                                row_list[i] = min_value
+                            else:
+                                # Round to 2 decimal places
+                                row_list[i] = round(val, 2)
+                        except Exception as e:
+                            logging.warning(f"Error handling decimal value {val}: {str(e)}. Setting to NULL.")
+                            row_list[i] = None
+                # Handle date/time objects by converting to string
+                elif isinstance(val, (datetime, pd.Timestamp)):
+                    try:
+                        # Format as SQL Server compatible datetime
+                        row_list[i] = val.strftime('%Y-%m-%d %H:%M:%S')
+                    except Exception as e:
+                        logging.warning(f"Error formatting datetime {val}: {str(e)}. Setting to NULL.")
+                        row_list[i] = None
+            
+            # Use the same column names as defined in the SQL tables
+            row_list.append(batch_id)  # This will go into etl_batch_id column (column name now correctly matched)
+            row_list.append(current_timestamp)  # This will go into extracted_at column
+            modified_data.append(row_list)
         
-        # Insert any remaining rows
-        if rows_to_insert:
+        prep_time = (datetime.now() - start_prep).total_seconds()
+        logging.info(f"Data preparation completed in {prep_time:.2f} seconds")
+        
+        # Use the modified data for insertion
+        rows_to_insert = modified_data
+            
+            # We've already prepared all data, so this isn't needed anymore
+        
+        # Enable fast loading
+        cursor.fast_executemany = True
+        
+        # Insert in batches for better performance
+        start_time = datetime.now()
+        total_rows = len(modified_data)
+        
+        for i in range(0, total_rows, batch_size):
+            batch_end = min(i + batch_size, total_rows)
+            batch = modified_data[i:batch_end]
+            
             try:
-                cursor.fast_executemany = True
-                cursor.executemany(insert_sql, rows_to_insert)
+                cursor.executemany(insert_sql, batch)
                 conn.commit()
-                row_count += len(rows_to_insert)
-            except Exception as e:
-                logging.error(f"Error during final batch insert to {table_name}: {e}")
+                row_count += len(batch)
                 
-                # Switch to row-by-row insert for remaining rows
+                # Only log every 10,000 rows to reduce log overhead
+                if i % 20000 == 0 or batch_end == total_rows:
+                    elapsed = (datetime.now() - start_time).total_seconds()
+                    rate = (i + len(batch)) / elapsed if elapsed > 0 else 0
+                    logging.info(f"Inserted {i + len(batch):,} of {total_rows:,} rows into {table_name} ({(i + len(batch))/total_rows*100:.1f}%) - {rate:.1f} rows/sec")
+            except Exception as e:
+                # For debugging: log the data that caused the issue
+                logging.error(f"Error during batch insert to {table_name}: {e}")
+                # Switch to row-by-row insert for error handling
+                logging.info("Switching to row-by-row insert for error recovery")
                 conn.rollback()
-                for i, single_row in enumerate(rows_to_insert):
+                
+                for j, single_row in enumerate(batch):
                     try:
                         cursor.execute(insert_sql, single_row)
                         conn.commit()
                         row_count += 1
                     except Exception as row_error:
                         conn.rollback()
-                        logging.error(f"Error inserting row {i}: {row_error}")
+                        logging.error(f"Error inserting row {i+j}: {row_error}")
+                        # Log problematic data for diagnostics (first 200 chars)
+                        logging.error(f"Problematic row data (truncated): {str(single_row)[:200]}")
+        
+        # Log performance statistics
+        total_time = (datetime.now() - start_time).total_seconds()
+        rate = total_rows / total_time if total_time > 0 else 0
+        logging.info(f"Completed inserting {total_rows:,} rows into {table_name} in {total_time:.2f} seconds ({rate:.1f} rows/sec)")
         
         logging.info(f"Total of {row_count} rows inserted into {table_name}")
         return row_count
