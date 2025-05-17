@@ -1,0 +1,3 @@
+SELECT Id, Name, Agency_ID__c, Commissions_Folder_Name__c
+FROM Agency__c  
+WHERE IsDeleted = FALSE AND Agency_ID__c != ''

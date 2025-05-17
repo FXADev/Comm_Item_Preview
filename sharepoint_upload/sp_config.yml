@@ -1,0 +1,24 @@
+# SharePoint Upload Configuration
+run_ym: 202505  # Format: YYYYMM - Should be set for each run
+
+# Redshift queries for agency group information
+redshift:
+  queries:
+    - name: agency_groups
+      file: redshift/agency_group.sql
+
+# SharePoint-related paths
+output_paths:
+  base_path: "./outputs"  # Base path for SharePoint-synced folder
+
+# SQL queries for commission data
+sql:
+  queries:
+    - name: commission_data
+      file: sql/combined_item_payout_variables.sql
+
+# Salesforce queries for agency folder information
+salesforce:
+  queries:
+    - name: agency_folders
+      file: soql/comission_folder.soql
