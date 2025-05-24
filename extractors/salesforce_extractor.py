@@ -125,15 +125,17 @@ def execute_salesforce_queries(config, batch_id, manual_mode=False):
                 
                 # Apply transformations to mock data
                 transformed_data = []
+                total_capped_values = 0
                 for row in mock_data:
-                    transformed_row = transform_row_data(row, columns, 'salesforce')
+                    transformed_row, capped_count = transform_row_data(row, columns, 'salesforce')
                     transformed_data.append(transformed_row)
+                    total_capped_values += capped_count
                 
                 results[query_name] = {
                     'data': transformed_data,
                     'columns': columns
                 }
-                log_transformation_summary(len(mock_data), len(transformed_data), 'Salesforce', query_name)
+                log_transformation_summary(len(mock_data), len(transformed_data), 'Salesforce', query_name, total_capped_values)
             else:
                 logging.info(f"Executing Salesforce query: {query_name}")
                 # Execute query with pagination support
@@ -175,11 +177,13 @@ def execute_salesforce_queries(config, batch_id, manual_mode=False):
                     logging.info(f"Applying Salesforce-specific transformations to {query_name}")
                     transformed_data_rows = []
                     transformation_errors = 0
+                    total_capped_values = 0
                     
                     for i, row in enumerate(raw_data_rows):
                         try:
-                            transformed_row = transform_row_data(row, columns, 'salesforce')
+                            transformed_row, capped_count = transform_row_data(row, columns, 'salesforce')
                             transformed_data_rows.append(transformed_row)
+                            total_capped_values += capped_count
                         except Exception as e:
                             logging.error(f"Error transforming row {i} in {query_name}: {e}")
                             transformation_errors += 1
@@ -189,7 +193,7 @@ def execute_salesforce_queries(config, batch_id, manual_mode=False):
                     if transformation_errors > 0:
                         logging.warning(f"Skipped {transformation_errors} problematic rows during transformation in {query_name}")
                     
-                    log_transformation_summary(len(raw_data_rows), len(transformed_data_rows), 'Salesforce', query_name)
+                    log_transformation_summary(len(raw_data_rows), len(transformed_data_rows), 'Salesforce', query_name, total_capped_values)
                     
                     results[query_name] = {
                         'data': transformed_data_rows,
