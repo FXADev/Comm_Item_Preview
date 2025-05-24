@@ -50,7 +50,7 @@ def insert_to_sql_table(conn, table_name, data, columns, batch_id, batch_size=20
         start_prep = datetime.now()
         logging.info(f"Preparing {len(data)} pre-transformed rows for insertion into {table_name}")
         
-        # Add audit columns to each row
+        # Add audit columns to each row (data should already be transformed by extractors)
         modified_data = []
         for row in data:
             # Convert tuple to list if needed and create a copy
