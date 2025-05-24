@@ -132,9 +132,24 @@ def execute_redshift_queries(config, batch_id, manual_mode=False):
                         logging.info(f"Applying Redshift-specific transformations to {query_name}")
                         transformed_data_rows = []
                         transformation_errors = 0
+                        large_value_count = 0
+                        
+                        # Check for potentially problematic fields in this query
+                        numeric_fields = [col for col in columns if any(keyword in col.lower() for keyword in 
+                                        ['amount', 'commission', 'billed', 'payment', 'profit', 'deduction', 'override', 'rate'])]
+                        if numeric_fields:
+                            logging.info(f"Monitoring numeric fields in {query_name}: {numeric_fields}")
                         
                         for i, row in enumerate(raw_data_rows):
                             try:
+                                # Check for large values before transformation
+                                for j, val in enumerate(row):
+                                    if isinstance(val, (int, float)) and val is not None:
+                                        if abs(val) > 999999999999.99:  # Our conservative limit
+                                            field_name = columns[j] if j < len(columns) else f'column_{j}'
+                                            logging.warning(f"Row {i}, field '{field_name}': Large value detected: {val}")
+                                            large_value_count += 1
+                                
                                 transformed_row = transform_row_data(row, columns, 'redshift')
                                 transformed_data_rows.append(transformed_row)
                             except Exception as e:
@@ -142,6 +157,9 @@ def execute_redshift_queries(config, batch_id, manual_mode=False):
                                 transformation_errors += 1
                                 # Skip problematic rows instead of crashing
                                 continue
+                        
+                        if large_value_count > 0:
+                            logging.warning(f"Found {large_value_count} values exceeding limits in {query_name}")
                         
                         if transformation_errors > 0:
                             logging.warning(f"Skipped {transformation_errors} problematic rows during transformation in {query_name}")
