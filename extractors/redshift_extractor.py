@@ -2,7 +2,8 @@
 Redshift Extractor Module
 
 This module handles all interactions with the Redshift database,
-including connection management and query execution.
+including connection management, query execution, and data transformation
+to ensure SQL Server compatibility.
 """
 
 import os
@@ -13,6 +14,7 @@ from psycopg2.extras import RealDictCursor
 
 # Import utilities
 from utils.config_loader import load_query_from_file
+from utils.data_transformers import transform_row_data, log_transformation_summary
 
 
 def get_redshift_connection(manual_mode=False):
@@ -55,7 +57,7 @@ def get_redshift_connection(manual_mode=False):
 
 def execute_redshift_queries(config, batch_id, manual_mode=False):
     """
-    Execute Redshift queries defined in the configuration and return results.
+    Execute Redshift queries defined in the configuration and return transformed results.
     
     Args:
         config (dict): Configuration dictionary containing Redshift query settings
@@ -64,7 +66,7 @@ def execute_redshift_queries(config, batch_id, manual_mode=False):
         
     Returns:
         dict: Dictionary of query results with format:
-            {query_name: {'data': rows, 'columns': column_names}}
+            {query_name: {'data': transformed_rows, 'columns': column_names}}
     """
     results = {}
     
@@ -91,11 +93,27 @@ def execute_redshift_queries(config, batch_id, manual_mode=False):
             
             if manual_mode:
                 logging.info(f"MANUAL MODE: Would execute Redshift query: {query_name}")
-                # Create mock data for simulation
+                # Create mock data for simulation with some realistic financial values
+                mock_data = [
+                    ['12345', 1250.75, 0.15, '2024-05-20 10:30:00'],
+                    ['12346', 2500.50, 0.20, '2024-05-21 11:45:00'],
+                    ['12347', 999.99, 0.12, '2024-05-22 09:15:00']
+                ]
+                columns = ['item_id', 'commission_amount', 'rate', 'created_date']
+                
+                # Apply transformations even to mock data for testing
+                transformed_data = []
+                total_capped_values = 0
+                for row in mock_data:
+                    transformed_row, capped_count = transform_row_data(row, columns, 'redshift')
+                    transformed_data.append(transformed_row)
+                    total_capped_values += capped_count
+                
                 results[query_name] = {
-                    'data': [['mock_data']] * 5,  # 5 rows of mock data
-                    'columns': ['column1', 'column2']
+                    'data': transformed_data,
+                    'columns': columns
                 }
+                log_transformation_summary(len(mock_data), len(transformed_data), 'Redshift', query_name, total_capped_values)
             else:
                 logging.info(f"Executing Redshift query: {query_name}")
                 # Execute query
@@ -104,20 +122,71 @@ def execute_redshift_queries(config, batch_id, manual_mode=False):
                     rows = cursor.fetchall()
                     
                     # Convert to list of lists for bulk insert (with column order preserved)
-                    data_rows = []
+                    raw_data_rows = []
                     if rows:
                         columns = list(rows[0].keys())
                         for row in rows:
-                            data_rows.append([row[col] for col in columns])
+                            raw_data_rows.append([row[col] for col in columns])
+                        
+                        logging.info(f"Redshift query {query_name} returned {len(raw_data_rows)} raw rows")
+                        
+                        # Apply data transformations
+                        logging.info(f"Applying Redshift-specific transformations to {query_name}")
+                        transformed_data_rows = []
+                        transformation_errors = 0
+                        large_value_count = 0
+                        total_capped_values = 0
+                        
+                        # Check for potentially problematic fields in this query
+                        numeric_fields = [col for col in columns if any(keyword in col.lower() for keyword in 
+                                        ['amount', 'commission', 'billed', 'payment', 'profit', 'deduction', 'override', 'rate'])]
+                        if numeric_fields:
+                            logging.info(f"Monitoring numeric fields in {query_name}: {numeric_fields}")
+                        
+                        for i, row in enumerate(raw_data_rows):
+                            try:
+                                # Check for large values before transformation
+                                for j, val in enumerate(row):
+                                    if isinstance(val, (int, float)) and val is not None:
+                                        field_name = columns[j] if j < len(columns) else f'column_{j}'
+                                        # Use appropriate limit based on field type  
+                                        if any(keyword in field_name.lower() for keyword in ['rate', 'split']):
+                                            limit = 9999.9999
+                                        else:
+                                            limit = 999999999999999.99  # decimal(18,2) limit
+                                        
+                                        if abs(val) > limit:
+                                            logging.warning(f"Row {i}, field '{field_name}': Large value detected: {val} (limit: {limit})")
+                                            large_value_count += 1
+                                
+                                transformed_row, capped_count = transform_row_data(row, columns, 'redshift')
+                                transformed_data_rows.append(transformed_row)
+                                total_capped_values += capped_count
+                            except Exception as e:
+                                logging.error(f"Error transforming row {i} in {query_name}: {e}")
+                                transformation_errors += 1
+                                # Skip problematic rows instead of crashing
+                                continue
+                        
+                        if large_value_count > 0:
+                            logging.warning(f"Found {large_value_count} values exceeding limits in {query_name}")
+                        
+                        if transformation_errors > 0:
+                            logging.warning(f"Skipped {transformation_errors} problematic rows during transformation in {query_name}")
+                        
+                        log_transformation_summary(len(raw_data_rows), len(transformed_data_rows), 'Redshift', query_name, total_capped_values)
+                        
+                        results[query_name] = {
+                            'data': transformed_data_rows,
+                            'columns': columns
+                        }
                     else:
                         columns = []
-                    
-                    logging.info(f"Redshift query {query_name} returned {len(data_rows)} rows")
-                    
-                    results[query_name] = {
-                        'data': data_rows,
-                        'columns': columns
-                    }
+                        logging.warning(f"Redshift query {query_name} returned no rows")
+                        results[query_name] = {
+                            'data': [],
+                            'columns': []
+                        }
         
         return results
     
