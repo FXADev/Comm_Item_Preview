@@ -14,6 +14,7 @@ from decimal import Decimal, InvalidOperation
 def transform_numeric_value(val, source_type='generic', field_name='unknown'):
     """
     Transform numeric values to ensure SQL Server compatibility.
+    Financial values are capped at limits instead of being set to NULL.
     
     Args:
         val: The value to process
@@ -42,69 +43,101 @@ def transform_numeric_value(val, source_type='generic', field_name='unknown'):
             if isinstance(val, Decimal):
                 # Handle very large Decimal values that might cause float overflow
                 str_val = str(val)
-                if len(str_val.replace('.', '').replace('-', '')) > 15:
-                    logging.warning(f"{source_type} field '{field_name}': Very large Decimal value {val}, setting to NULL")
-                    return None
+                if len(str_val.replace('.', '').replace('-', '')) > 18:
+                    logging.warning(f"{source_type} field '{field_name}': Very large Decimal value {val}, capping to limit")
+                    # Use string parsing to avoid float overflow
+                    if any(keyword in field_name.lower() for keyword in ['rate', 'split']):
+                        return 9999.9999 if not str_val.startswith('-') else -9999.9999
+                    else:
+                        return 999999999999999.99 if not str_val.startswith('-') else -999999999999999.99
                 float_val = float(val)
             elif isinstance(val, int):
                 # Handle very large integers
-                if abs(val) > 999999999999999:
-                    logging.warning(f"{source_type} field '{field_name}': Very large integer {val}, setting to NULL")
-                    return None
+                if abs(val) > 999999999999999:  # More than 15 digits (decimal(18,2) before decimal limit)
+                    logging.warning(f"{source_type} field '{field_name}': Very large integer {val}, capping to limit")
+                    if any(keyword in field_name.lower() for keyword in ['rate', 'split']):
+                        return 9999.9999 if val > 0 else -9999.9999
+                    else:
+                        return 999999999999999.99 if val > 0 else -999999999999999.99
                 float_val = float(val)
             else:
                 float_val = val
             
             # Check for special float values
             if not (float_val == float_val):  # NaN check (NaN != NaN)
-                logging.debug(f"{source_type} field '{field_name}': NaN value converted to NULL")
-                return None
-            if float_val == float('inf') or float_val == float('-inf'):
-                logging.debug(f"{source_type} field '{field_name}': Infinite value converted to NULL")
-                return None
-            
-            # Apply source-specific limits - made more conservative
-            if source_type == 'redshift':
-                # Redshift often has large financial amounts - but be more conservative
-                max_value = 999999999999.99    # 12 digits before decimal (was 13)
-            elif source_type == 'salesforce':
-                # Salesforce typically has smaller currency values
-                max_value = 999999999.99       # 9 digits before decimal
-            else:
-                # Generic/conservative limit
-                max_value = 999999999999.99    # 12 digits before decimal
-            
-            min_value = -max_value
-            
-            if abs(float_val) > max_value:
-                logging.warning(f"{source_type} field '{field_name}': Value {float_val} exceeds limits (max: {max_value}), setting to NULL")
-                return None
-            else:
-                # Round to 2 decimal places for currency fields, 4 for rates
+                logging.debug(f"{source_type} field '{field_name}': NaN value converted to 0")
+                return 0.0  # Convert NaN to 0 for financial data
+            if float_val == float('inf'):
+                logging.warning(f"{source_type} field '{field_name}': Positive infinity converted to maximum limit")
                 if any(keyword in field_name.lower() for keyword in ['rate', 'split']):
-                    # Rate fields - keep 4 decimal places
-                    result = round(float_val, 4)
+                    return 9999.9999
                 else:
-                    # Currency fields - keep 2 decimal places
-                    result = round(float_val, 2)
-                
-                # Final safety check after rounding
-                if abs(result) > max_value:
-                    logging.warning(f"{source_type} field '{field_name}': Value {result} still exceeds limits after rounding (max: {max_value}), setting to NULL")
-                    return None
-                
-                return result
+                    return 999999999999999.99
+            if float_val == float('-inf'):
+                logging.warning(f"{source_type} field '{field_name}': Negative infinity converted to minimum limit")
+                if any(keyword in field_name.lower() for keyword in ['rate', 'split']):
+                    return -9999.9999
+                else:
+                    return -999999999999999.99
+            
+            # SQL Server decimal limits based on UPDATED table schema
+            # Currency fields: decimal(18,2) - 16 digits before decimal, 2 after
+            # Rate fields: decimal(8,4) - 4 digits before decimal, 4 after
+            if any(keyword in field_name.lower() for keyword in ['rate', 'split']):
+                # Rate fields are decimal(8,4) - max 4 digits before decimal
+                max_value = 9999.9999
+                min_value = -9999.9999
+            else:
+                # Currency fields are decimal(18,2) - max 16 digits before decimal
+                # Much more capacity than the previous decimal(18,4)!
+                max_value = 999999999999999.99  # 16 digits before decimal
+                min_value = -999999999999999.99
+            
+            # Cap values at limits instead of setting to NULL
+            if float_val > max_value:
+                logging.warning(f"{source_type} field '{field_name}': Value {float_val} exceeds maximum (max: {max_value}), capping at limit")
+                capped_val = max_value
+            elif float_val < min_value:
+                logging.warning(f"{source_type} field '{field_name}': Value {float_val} below minimum (min: {min_value}), capping at limit")
+                capped_val = min_value
+            else:
+                capped_val = float_val
+            
+            # Round to appropriate decimal places based on field type
+            if any(keyword in field_name.lower() for keyword in ['rate', 'split']):
+                # Rate fields - keep 4 decimal places (decimal(8,4))
+                result = round(capped_val, 4)
+            else:
+                # Currency fields - keep 2 decimal places (decimal(18,2))
+                result = round(capped_val, 2)
+            
+            # Final safety check after rounding using new decimal(18,2) limits
+            if any(keyword in field_name.lower() for keyword in ['rate', 'split']):
+                final_max = 9999.9999
+                final_min = -9999.9999
+            else:
+                final_max = 999999999999999.99  # decimal(18,2) limit
+                final_min = -999999999999999.99
+            
+            if result > final_max:
+                logging.warning(f"{source_type} field '{field_name}': Value {result} still exceeds maximum after rounding, final cap at {final_max}")
+                return final_max
+            elif result < final_min:
+                logging.warning(f"{source_type} field '{field_name}': Value {result} still below minimum after rounding, final cap at {final_min}")
+                return final_min
+            
+            return result
                 
         except (InvalidOperation, ValueError, OverflowError, TypeError) as e:
-            logging.warning(f"{source_type} field '{field_name}': Error processing numeric value {val}: {str(e)}. Setting to NULL.")
-            return None
+            logging.warning(f"{source_type} field '{field_name}': Error processing numeric value {val} (type: {type(val)}): {str(e)}. Setting to 0.")
+            return 0.0  # Return 0 instead of NULL for financial data
     
     # Handle string representations of numbers
     elif isinstance(val, str):
         # Check if it's a numeric string
         try:
             # Avoid processing very long strings that might be large numbers
-            if len(val) > 20:
+            if len(val) > 25:
                 return val  # Return as string, don't try to convert
             float_val = float(val)
             # Recursively handle the converted float
@@ -178,15 +211,17 @@ def transform_row_data(row_data, column_names, source_type='generic'):
         source_type: Source system ('redshift', 'salesforce', 'generic')
         
     Returns:
-        Transformed list of values
+        tuple: (transformed_list_of_values, capped_value_count)
     """
     if not row_data or not column_names:
-        return row_data
+        return row_data, 0
     
     transformed_row = []
+    capped_values = 0
     
     for i, val in enumerate(row_data):
         field_name = column_names[i] if i < len(column_names) else f'column_{i}'
+        original_val = val
         
         # Apply appropriate transformation based on field name patterns
         if any(keyword in field_name.lower() for keyword in [
@@ -209,12 +244,21 @@ def transform_row_data(row_data, column_names, source_type='generic'):
             else:
                 transformed_val = val
         
+        # Count capped values for large numeric values (values that were changed due to limits)
+        if (original_val is not None and 
+            isinstance(original_val, (int, float, Decimal)) and 
+            transformed_val is not None and
+            isinstance(transformed_val, (int, float)) and
+            abs(float(original_val)) > 1000 and  # Only count significant values
+            abs(abs(float(original_val)) - abs(float(transformed_val))) > 0.01):  # Value was actually changed
+            capped_values += 1
+        
         transformed_row.append(transformed_val)
     
-    return transformed_row
+    return transformed_row, capped_values
 
 
-def log_transformation_summary(original_count, transformed_count, source_type, query_name):
+def log_transformation_summary(original_count, transformed_count, source_type, query_name, capped_values=0):
     """
     Log a summary of transformations applied.
     
@@ -223,8 +267,12 @@ def log_transformation_summary(original_count, transformed_count, source_type, q
         transformed_count: Number of rows after transformation
         source_type: Source system name
         query_name: Name of the query/table
+        capped_values: Number of values that were capped due to range limits
     """
     if original_count != transformed_count:
         logging.warning(f"{source_type} {query_name}: Row count changed from {original_count} to {transformed_count} during transformation")
     else:
         logging.info(f"{source_type} {query_name}: Successfully transformed {transformed_count} rows")
+    
+    if capped_values > 0:
+        logging.warning(f"{source_type} {query_name}: Capped {capped_values} out-of-range values at SQL Server limits")
