@@ -9,7 +9,7 @@ import logging
 import pandas as pd
 import pyodbc
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 import time
 
 
@@ -45,8 +45,6 @@ def insert_to_sql_table(conn, table_name, data, columns, batch_id, batch_size=50
         # Create INSERT SQL template
         insert_sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})"
         
-        # Prepare batches for bulk insert
-        rows_to_insert = []
         # Format timestamp properly for SQL Server
         current_timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
@@ -58,53 +56,19 @@ def insert_to_sql_table(conn, table_name, data, columns, batch_id, batch_size=50
         modified_data = []
         for row in data:
             # Convert tuple to list if needed
-            row_list = list(row) if isinstance(row, tuple) else row
+            row_list = list(row) if isinstance(row, tuple) else row[:]
             
             # Fix decimal precision issues
             for i, val in enumerate(row_list):
-                # Handle Decimal values to ensure they fit within SQL Server precision
-                if isinstance(val, (Decimal, float)):
-                    if val is None:
-                        row_list[i] = None
-                    else:
-                        try:
-                            # Limit to max value for decimal(18,2)
-                            max_value = 9999999999999999.99
-                            min_value = -9999999999999999.99
-                            
-                            if val > max_value:
-                                logging.warning(f"Value {val} exceeds maximum decimal(18,2) limit, capping at {max_value}")
-                                row_list[i] = max_value
-                            elif val < min_value:
-                                logging.warning(f"Value {val} below minimum decimal(18,2) limit, capping at {min_value}")
-                                row_list[i] = min_value
-                            else:
-                                # Round to 2 decimal places
-                                row_list[i] = round(val, 2)
-                        except Exception as e:
-                            logging.warning(f"Error handling decimal value {val}: {str(e)}. Setting to NULL.")
-                            row_list[i] = None
-                # Handle date/time objects by converting to string
-                elif isinstance(val, (datetime, pd.Timestamp)):
-                    try:
-                        # Format as SQL Server compatible datetime
-                        row_list[i] = val.strftime('%Y-%m-%d %H:%M:%S')
-                    except Exception as e:
-                        logging.warning(f"Error formatting datetime {val}: {str(e)}. Setting to NULL.")
-                        row_list[i] = None
-            
-            # Use the same column names as defined in the SQL tables
-            row_list.append(batch_id)  # This will go into etl_batch_id column (column name now correctly matched)
-            row_list.append(current_timestamp)  # This will go into extracted_at column
+                row_list[i] = _handle_decimal_value(val)
+                
+            # Add audit columns
+            row_list.append(batch_id)  # etl_batch_id
+            row_list.append(current_timestamp)  # extracted_at
             modified_data.append(row_list)
         
         prep_time = (datetime.now() - start_prep).total_seconds()
         logging.info(f"Data preparation completed in {prep_time:.2f} seconds")
-        
-        # Use the modified data for insertion
-        rows_to_insert = modified_data
-            
-            # We've already prepared all data, so this isn't needed anymore
         
         # Enable fast loading
         cursor.fast_executemany = True
@@ -122,7 +86,7 @@ def insert_to_sql_table(conn, table_name, data, columns, batch_id, batch_size=50
                 conn.commit()
                 row_count += len(batch)
                 
-                # Only log every 10,000 rows to reduce log overhead
+                # Only log every 20,000 rows to reduce log overhead
                 if i % 20000 == 0 or batch_end == total_rows:
                     elapsed = (datetime.now() - start_time).total_seconds()
                     rate = (i + len(batch)) / elapsed if elapsed > 0 else 0
@@ -157,6 +121,76 @@ def insert_to_sql_table(conn, table_name, data, columns, batch_id, batch_size=50
         logging.error(f"Failed to insert data into {table_name}: {e}")
         conn.rollback()
         return 0
+
+
+def _handle_decimal_value(val):
+    """
+    Handle decimal/numeric values to ensure SQL Server compatibility.
+    
+    Args:
+        val: The value to process
+        
+    Returns:
+        Processed value safe for SQL Server insertion
+    """
+    # Handle None/NULL values
+    if val is None:
+        return None
+    
+    # Handle Decimal and float values
+    if isinstance(val, (Decimal, float)):
+        try:
+            # Convert to Decimal for precise handling
+            if isinstance(val, float):
+                # Check for special float values
+                if not (val == val):  # NaN check (NaN != NaN)
+                    logging.warning(f"NaN value encountered, setting to NULL")
+                    return None
+                if val == float('inf') or val == float('-inf'):
+                    logging.warning(f"Infinite value {val} encountered, setting to NULL")
+                    return None
+                    
+                # Convert float to Decimal for precise handling
+                decimal_val = Decimal(str(val))
+            else:
+                decimal_val = val
+            
+            # SQL Server decimal(18,2) limits
+            max_value = Decimal('9999999999999999.99')
+            min_value = Decimal('-9999999999999999.99')
+            
+            if decimal_val > max_value:
+                logging.warning(f"Value {decimal_val} exceeds maximum decimal(18,2) limit, capping at {max_value}")
+                return float(max_value)
+            elif decimal_val < min_value:
+                logging.warning(f"Value {decimal_val} below minimum decimal(18,2) limit, capping at {min_value}")
+                return float(min_value)
+            else:
+                # Round to 2 decimal places and convert to float for SQL Server
+                rounded_val = decimal_val.quantize(Decimal('0.01'))
+                return float(rounded_val)
+                
+        except (InvalidOperation, ValueError, OverflowError) as e:
+            logging.warning(f"Error handling decimal value {val}: {str(e)}. Setting to NULL.")
+            return None
+    
+    # Handle date/time objects by converting to string
+    elif isinstance(val, (datetime, pd.Timestamp)):
+        try:
+            # Format as SQL Server compatible datetime
+            if pd.isna(val):
+                return None
+            return val.strftime('%Y-%m-%d %H:%M:%S')
+        except Exception as e:
+            logging.warning(f"Error formatting datetime {val}: {str(e)}. Setting to NULL.")
+            return None
+    
+    # Handle pandas NaT and NaN
+    elif pd.isna(val):
+        return None
+        
+    # Return value as-is for other types
+    return val
 
 
 def load_data_to_sql_server(sql_conn, data_results, batch_id, source_type='redshift'):
