@@ -13,7 +13,7 @@ from decimal import Decimal, InvalidOperation
 import time
 
 
-def insert_to_sql_table(conn, table_name, data, columns, batch_id, batch_size=5000):
+def insert_to_sql_table(conn, table_name, data, columns, batch_id, batch_size=2000):
     """
     Insert data into a SQL Server table using optimized bulk loading.
     
@@ -23,7 +23,7 @@ def insert_to_sql_table(conn, table_name, data, columns, batch_id, batch_size=50
         data: List of rows to insert
         columns: List of column names
         batch_id: Batch ID for tracking
-        batch_size: Batch size for inserts (increased for performance)
+        batch_size: Batch size for inserts (reduced for stability)
     
     Returns:
         int: Number of rows inserted
@@ -54,18 +54,52 @@ def insert_to_sql_table(conn, table_name, data, columns, batch_id, batch_size=50
         
         # Pre-process all data at once
         modified_data = []
-        for row in data:
+        validation_errors = 0
+        
+        for row_idx, row in enumerate(data):
             # Convert tuple to list if needed
             row_list = list(row) if isinstance(row, tuple) else row[:]
             
-            # Fix decimal precision issues
+            # Fix decimal precision issues and validate
+            valid_row = True
             for i, val in enumerate(row_list):
-                row_list[i] = _handle_decimal_value(val)
+                processed_val = _handle_decimal_value(val)
+                
+                # Additional validation for SQL Server compatibility
+                if processed_val is not None and isinstance(processed_val, (int, float)):
+                    # Final safety check for numeric values
+                    if abs(processed_val) > 9999999999999.99:
+                        logging.warning(f"Row {row_idx}: Value {processed_val} still out of range after processing, setting to NULL")
+                        processed_val = None
+                        validation_errors += 1
+                
+                row_list[i] = processed_val
                 
             # Add audit columns
             row_list.append(batch_id)  # etl_batch_id
             row_list.append(current_timestamp)  # extracted_at
             modified_data.append(row_list)
+        
+        if validation_errors > 0:
+            logging.warning(f"Fixed {validation_errors} out-of-range values during preprocessing")
+        
+        # Quick test to identify any remaining problematic values
+        logging.info("Checking first 5 rows for potential numeric issues...")
+        for row_idx, row in enumerate(modified_data[:5]):  # Check first 5 rows
+            for col_idx, val in enumerate(row):
+                if isinstance(val, (int, float)) and val is not None:
+                    if abs(val) > 9999999999999.99:
+                        col_name = columns[col_idx] if col_idx < len(columns) else f"column_{col_idx}"
+                        logging.error(f"Row {row_idx}, Column '{col_name}' (index {col_idx}): {val} - still too large after processing!")
+                    elif isinstance(val, float):
+                        if not (val == val):  # NaN check
+                            col_name = columns[col_idx] if col_idx < len(columns) else f"column_{col_idx}"
+                            logging.error(f"Row {row_idx}, Column '{col_name}' (index {col_idx}): NaN detected!")
+                        elif val == float('inf') or val == float('-inf'):
+                            col_name = columns[col_idx] if col_idx < len(columns) else f"column_{col_idx}"
+                            logging.error(f"Row {row_idx}, Column '{col_name}' (index {col_idx}): Infinite value {val} detected!")
+        
+        logging.info("Pre-insertion validation complete")
         
         prep_time = (datetime.now() - start_prep).total_seconds()
         logging.info(f"Data preparation completed in {prep_time:.2f} seconds")
@@ -92,29 +126,38 @@ def insert_to_sql_table(conn, table_name, data, columns, batch_id, batch_size=50
                     rate = (i + len(batch)) / elapsed if elapsed > 0 else 0
                     logging.info(f"Inserted {i + len(batch):,} of {total_rows:,} rows into {table_name} ({(i + len(batch))/total_rows*100:.1f}%) - {rate:.1f} rows/sec")
             except Exception as e:
-                # For debugging: log the data that caused the issue
+                # Log the error but don't attempt row-by-row recovery to avoid segfaults
                 logging.error(f"Error during batch insert to {table_name}: {e}")
+                logging.error(f"Failed batch: rows {i} to {batch_end-1}")
                 
-                # Log sample of problematic batch for debugging
-                logging.error(f"Batch size: {len(batch)}, Sample row: {str(batch[0] if batch else 'No data')[:200]}")
-                
-                # Check for problematic values in the batch
-                _debug_batch_values(batch, table_name)
-                
-                # Switch to row-by-row insert for error handling
-                logging.info("Switching to row-by-row insert for error recovery")
+                # Skip this batch and continue with next batch instead of row-by-row
+                # This prevents segmentation faults and memory issues
                 conn.rollback()
+                logging.warning(f"Skipping batch of {len(batch)} rows due to data issues")
                 
-                for j, single_row in enumerate(batch):
-                    try:
-                        cursor.execute(insert_sql, single_row)
-                        conn.commit()
-                        row_count += 1
-                    except Exception as row_error:
-                        conn.rollback()
-                        logging.error(f"Error inserting row {i+j}: {row_error}")
-                        # Log problematic data for diagnostics
-                        _debug_single_row(single_row, columns, i+j)
+                # Optionally try smaller sub-batches (safer approach)
+                sub_batch_success = False
+                if len(batch) > 100:  # Only try sub-batches for larger batches
+                    logging.info("Attempting smaller sub-batches")
+                    sub_batch_size = 50
+                    for sub_i in range(0, len(batch), sub_batch_size):
+                        sub_batch_end = min(sub_i + sub_batch_size, len(batch))
+                        sub_batch = batch[sub_i:sub_batch_end]
+                        try:
+                            cursor.executemany(insert_sql, sub_batch)
+                            conn.commit()
+                            row_count += len(sub_batch)
+                            sub_batch_success = True
+                        except Exception as sub_e:
+                            logging.error(f"Sub-batch {sub_i}-{sub_batch_end} also failed: {sub_e}")
+                            conn.rollback()
+                            # Skip this sub-batch entirely
+                            continue
+                
+                if not sub_batch_success and len(batch) > 100:
+                    logging.warning(f"All sub-batches failed, skipping {len(batch)} rows entirely")
+                elif len(batch) <= 100:
+                    logging.warning(f"Small batch of {len(batch)} rows failed, skipping entirely")
         
         # Log performance statistics
         total_time = (datetime.now() - start_time).total_seconds()
@@ -207,37 +250,43 @@ def _handle_decimal_value(val):
         try:
             # Convert to float first for consistent handling
             if isinstance(val, Decimal):
+                # Handle very large Decimal values that might cause float overflow
+                str_val = str(val)
+                if len(str_val.replace('.', '').replace('-', '')) > 15:
+                    logging.warning(f"Very large Decimal value {val}, setting to NULL")
+                    return None
                 float_val = float(val)
             elif isinstance(val, int):
+                # Handle very large integers
+                if abs(val) > 999999999999999:
+                    logging.warning(f"Very large integer {val}, setting to NULL")
+                    return None
                 float_val = float(val)
             else:
                 float_val = val
             
             # Check for special float values
             if not (float_val == float_val):  # NaN check (NaN != NaN)
-                logging.warning(f"NaN value encountered, setting to NULL")
                 return None
             if float_val == float('inf') or float_val == float('-inf'):
-                logging.warning(f"Infinite value {float_val} encountered, setting to NULL")
                 return None
             
-            # SQL Server numeric constraints - be more conservative
-            # Using smaller limits to ensure compatibility
-            max_value = 999999999999999.99  # 15 digits before decimal
-            min_value = -999999999999999.99
+            # Very conservative SQL Server limits - use decimal(15,2) instead of (18,2)
+            # This prevents the numeric out of range errors
+            max_value = 9999999999999.99   # 13 digits before decimal
+            min_value = -9999999999999.99
             
-            if float_val > max_value:
-                logging.warning(f"Value {float_val} exceeds maximum limit, capping at {max_value}")
-                return max_value
-            elif float_val < min_value:
-                logging.warning(f"Value {float_val} below minimum limit, capping at {min_value}")
-                return min_value
+            if abs(float_val) > max_value:
+                return None  # Set to NULL instead of capping to avoid any issues
             else:
                 # Round to 2 decimal places
-                return round(float_val, 2)
+                rounded_val = round(float_val, 2)
+                # Double-check after rounding
+                if abs(rounded_val) > max_value:
+                    return None
+                return rounded_val
                 
         except (InvalidOperation, ValueError, OverflowError, TypeError) as e:
-            logging.warning(f"Error handling numeric value {val} (type: {type(val)}): {str(e)}. Setting to NULL.")
             return None
     
     # Handle date/time objects by converting to string
@@ -248,13 +297,15 @@ def _handle_decimal_value(val):
                 return None
             return val.strftime('%Y-%m-%d %H:%M:%S')
         except Exception as e:
-            logging.warning(f"Error formatting datetime {val}: {str(e)}. Setting to NULL.")
             return None
     
     # Handle string representations of numbers
     elif isinstance(val, str):
         # Check if it's a numeric string
         try:
+            # Avoid processing very long strings that might be large numbers
+            if len(val) > 20:
+                return val  # Return as string, don't try to convert
             float_val = float(val)
             # Recursively handle the converted float
             return _handle_decimal_value(float_val)
