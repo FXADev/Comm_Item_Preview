@@ -63,16 +63,16 @@ def transform_numeric_value(val, source_type='generic', field_name='unknown'):
                 logging.debug(f"{source_type} field '{field_name}': Infinite value converted to NULL")
                 return None
             
-            # Apply source-specific limits
+            # Apply source-specific limits - made more conservative
             if source_type == 'redshift':
-                # Redshift often has large financial amounts
-                max_value = 9999999999999.99   # 13 digits before decimal
+                # Redshift often has large financial amounts - but be more conservative
+                max_value = 999999999999.99    # 12 digits before decimal (was 13)
             elif source_type == 'salesforce':
                 # Salesforce typically has smaller currency values
-                max_value = 999999999999.99    # 12 digits before decimal
+                max_value = 999999999.99       # 9 digits before decimal
             else:
                 # Generic/conservative limit
-                max_value = 9999999999999.99   # 13 digits before decimal
+                max_value = 999999999999.99    # 12 digits before decimal
             
             min_value = -max_value
             
