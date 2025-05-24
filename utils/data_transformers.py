@@ -77,16 +77,23 @@ def transform_numeric_value(val, source_type='generic', field_name='unknown'):
             min_value = -max_value
             
             if abs(float_val) > max_value:
-                logging.warning(f"{source_type} field '{field_name}': Value {float_val} exceeds limits, setting to NULL")
+                logging.warning(f"{source_type} field '{field_name}': Value {float_val} exceeds limits (max: {max_value}), setting to NULL")
                 return None
             else:
                 # Round to 2 decimal places for currency fields, 4 for rates
                 if any(keyword in field_name.lower() for keyword in ['rate', 'split']):
                     # Rate fields - keep 4 decimal places
-                    return round(float_val, 4)
+                    result = round(float_val, 4)
                 else:
                     # Currency fields - keep 2 decimal places
-                    return round(float_val, 2)
+                    result = round(float_val, 2)
+                
+                # Final safety check after rounding
+                if abs(result) > max_value:
+                    logging.warning(f"{source_type} field '{field_name}': Value {result} still exceeds limits after rounding (max: {max_value}), setting to NULL")
+                    return None
+                
+                return result
                 
         except (InvalidOperation, ValueError, OverflowError, TypeError) as e:
             logging.warning(f"{source_type} field '{field_name}': Error processing numeric value {val}: {str(e)}. Setting to NULL.")
