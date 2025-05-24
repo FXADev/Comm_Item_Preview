@@ -103,15 +103,17 @@ def execute_redshift_queries(config, batch_id, manual_mode=False):
                 
                 # Apply transformations even to mock data for testing
                 transformed_data = []
+                total_capped_values = 0
                 for row in mock_data:
-                    transformed_row = transform_row_data(row, columns, 'redshift')
+                    transformed_row, capped_count = transform_row_data(row, columns, 'redshift')
                     transformed_data.append(transformed_row)
+                    total_capped_values += capped_count
                 
                 results[query_name] = {
                     'data': transformed_data,
                     'columns': columns
                 }
-                log_transformation_summary(len(mock_data), len(transformed_data), 'Redshift', query_name)
+                log_transformation_summary(len(mock_data), len(transformed_data), 'Redshift', query_name, total_capped_values)
             else:
                 logging.info(f"Executing Redshift query: {query_name}")
                 # Execute query
@@ -133,6 +135,7 @@ def execute_redshift_queries(config, batch_id, manual_mode=False):
                         transformed_data_rows = []
                         transformation_errors = 0
                         large_value_count = 0
+                        total_capped_values = 0
                         
                         # Check for potentially problematic fields in this query
                         numeric_fields = [col for col in columns if any(keyword in col.lower() for keyword in 
@@ -145,13 +148,20 @@ def execute_redshift_queries(config, batch_id, manual_mode=False):
                                 # Check for large values before transformation
                                 for j, val in enumerate(row):
                                     if isinstance(val, (int, float)) and val is not None:
-                                        if abs(val) > 999999999999.99:  # Our conservative limit
-                                            field_name = columns[j] if j < len(columns) else f'column_{j}'
-                                            logging.warning(f"Row {i}, field '{field_name}': Large value detected: {val}")
+                                        field_name = columns[j] if j < len(columns) else f'column_{j}'
+                                        # Use appropriate limit based on field type  
+                                        if any(keyword in field_name.lower() for keyword in ['rate', 'split']):
+                                            limit = 9999.9999
+                                        else:
+                                            limit = 999999999999999.99  # decimal(18,2) limit
+                                        
+                                        if abs(val) > limit:
+                                            logging.warning(f"Row {i}, field '{field_name}': Large value detected: {val} (limit: {limit})")
                                             large_value_count += 1
                                 
-                                transformed_row = transform_row_data(row, columns, 'redshift')
+                                transformed_row, capped_count = transform_row_data(row, columns, 'redshift')
                                 transformed_data_rows.append(transformed_row)
+                                total_capped_values += capped_count
                             except Exception as e:
                                 logging.error(f"Error transforming row {i} in {query_name}: {e}")
                                 transformation_errors += 1
@@ -164,7 +174,7 @@ def execute_redshift_queries(config, batch_id, manual_mode=False):
                         if transformation_errors > 0:
                             logging.warning(f"Skipped {transformation_errors} problematic rows during transformation in {query_name}")
                         
-                        log_transformation_summary(len(raw_data_rows), len(transformed_data_rows), 'Redshift', query_name)
+                        log_transformation_summary(len(raw_data_rows), len(transformed_data_rows), 'Redshift', query_name, total_capped_values)
                         
                         results[query_name] = {
                             'data': transformed_data_rows,
