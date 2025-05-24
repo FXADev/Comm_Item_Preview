@@ -94,6 +94,13 @@ def insert_to_sql_table(conn, table_name, data, columns, batch_id, batch_size=50
             except Exception as e:
                 # For debugging: log the data that caused the issue
                 logging.error(f"Error during batch insert to {table_name}: {e}")
+                
+                # Log sample of problematic batch for debugging
+                logging.error(f"Batch size: {len(batch)}, Sample row: {str(batch[0] if batch else 'No data')[:200]}")
+                
+                # Check for problematic values in the batch
+                _debug_batch_values(batch, table_name)
+                
                 # Switch to row-by-row insert for error handling
                 logging.info("Switching to row-by-row insert for error recovery")
                 conn.rollback()
@@ -106,8 +113,8 @@ def insert_to_sql_table(conn, table_name, data, columns, batch_id, batch_size=50
                     except Exception as row_error:
                         conn.rollback()
                         logging.error(f"Error inserting row {i+j}: {row_error}")
-                        # Log problematic data for diagnostics (first 200 chars)
-                        logging.error(f"Problematic row data (truncated): {str(single_row)[:200]}")
+                        # Log problematic data for diagnostics
+                        _debug_single_row(single_row, columns, i+j)
         
         # Log performance statistics
         total_time = (datetime.now() - start_time).total_seconds()
@@ -121,6 +128,56 @@ def insert_to_sql_table(conn, table_name, data, columns, batch_id, batch_size=50
         logging.error(f"Failed to insert data into {table_name}: {e}")
         conn.rollback()
         return 0
+
+
+def _debug_batch_values(batch, table_name):
+    """Debug helper to identify problematic values in a batch."""
+    try:
+        logging.error(f"Debugging batch values for {table_name}")
+        
+        # Check first few rows for problematic values
+        for i, row in enumerate(batch[:3]):  # Check first 3 rows
+            for j, val in enumerate(row):
+                if isinstance(val, (int, float, Decimal)):
+                    if isinstance(val, float):
+                        if not (val == val):  # NaN
+                            logging.error(f"Found NaN at row {i}, column {j}")
+                        elif val == float('inf') or val == float('-inf'):
+                            logging.error(f"Found infinite value {val} at row {i}, column {j}")
+                        elif abs(val) > 999999999999999.99:
+                            logging.error(f"Found out-of-range value {val} at row {i}, column {j}")
+                    elif isinstance(val, Decimal):
+                        if abs(val) > Decimal('999999999999999.99'):
+                            logging.error(f"Found out-of-range Decimal {val} at row {i}, column {j}")
+    except Exception as debug_error:
+        logging.error(f"Error during batch debugging: {debug_error}")
+
+
+def _debug_single_row(row, columns, row_index):
+    """Debug helper to identify problematic values in a single row."""
+    try:
+        logging.error(f"Debugging row {row_index}")
+        for i, (col_name, val) in enumerate(zip(columns, row)):
+            if isinstance(val, (int, float, Decimal)):
+                val_info = f"Column '{col_name}' (index {i}): {val} (type: {type(val).__name__})"
+                if isinstance(val, float):
+                    if not (val == val):  # NaN
+                        logging.error(f"NaN found - {val_info}")
+                    elif val == float('inf') or val == float('-inf'):
+                        logging.error(f"Infinite value found - {val_info}")
+                    elif abs(val) > 999999999999999.99:
+                        logging.error(f"Out-of-range value found - {val_info}")
+                elif isinstance(val, Decimal):
+                    if abs(val) > Decimal('999999999999999.99'):
+                        logging.error(f"Out-of-range Decimal found - {val_info}")
+            elif val is None:
+                continue  # NULL values are fine
+            else:
+                # Log non-numeric values that might cause issues
+                if len(str(val)) > 100:  # Very long strings
+                    logging.error(f"Very long value in column '{col_name}': {str(val)[:100]}...")
+    except Exception as debug_error:
+        logging.error(f"Error during single row debugging: {debug_error}")
 
 
 def _handle_decimal_value(val):
@@ -137,47 +194,56 @@ def _handle_decimal_value(val):
     if val is None:
         return None
     
+    # Handle pandas NaT and NaN first
+    try:
+        if pd.isna(val):
+            return None
+    except (TypeError, ValueError):
+        # pd.isna might fail on some types, continue with other checks
+        pass
+    
     # Handle Decimal and float values
-    if isinstance(val, (Decimal, float)):
+    if isinstance(val, (Decimal, float, int)):
         try:
-            # Convert to Decimal for precise handling
-            if isinstance(val, float):
-                # Check for special float values
-                if not (val == val):  # NaN check (NaN != NaN)
-                    logging.warning(f"NaN value encountered, setting to NULL")
-                    return None
-                if val == float('inf') or val == float('-inf'):
-                    logging.warning(f"Infinite value {val} encountered, setting to NULL")
-                    return None
-                    
-                # Convert float to Decimal for precise handling
-                decimal_val = Decimal(str(val))
+            # Convert to float first for consistent handling
+            if isinstance(val, Decimal):
+                float_val = float(val)
+            elif isinstance(val, int):
+                float_val = float(val)
             else:
-                decimal_val = val
+                float_val = val
             
-            # SQL Server decimal(18,2) limits
-            max_value = Decimal('9999999999999999.99')
-            min_value = Decimal('-9999999999999999.99')
+            # Check for special float values
+            if not (float_val == float_val):  # NaN check (NaN != NaN)
+                logging.warning(f"NaN value encountered, setting to NULL")
+                return None
+            if float_val == float('inf') or float_val == float('-inf'):
+                logging.warning(f"Infinite value {float_val} encountered, setting to NULL")
+                return None
             
-            if decimal_val > max_value:
-                logging.warning(f"Value {decimal_val} exceeds maximum decimal(18,2) limit, capping at {max_value}")
-                return float(max_value)
-            elif decimal_val < min_value:
-                logging.warning(f"Value {decimal_val} below minimum decimal(18,2) limit, capping at {min_value}")
-                return float(min_value)
+            # SQL Server numeric constraints - be more conservative
+            # Using smaller limits to ensure compatibility
+            max_value = 999999999999999.99  # 15 digits before decimal
+            min_value = -999999999999999.99
+            
+            if float_val > max_value:
+                logging.warning(f"Value {float_val} exceeds maximum limit, capping at {max_value}")
+                return max_value
+            elif float_val < min_value:
+                logging.warning(f"Value {float_val} below minimum limit, capping at {min_value}")
+                return min_value
             else:
-                # Round to 2 decimal places and convert to float for SQL Server
-                rounded_val = decimal_val.quantize(Decimal('0.01'))
-                return float(rounded_val)
+                # Round to 2 decimal places
+                return round(float_val, 2)
                 
-        except (InvalidOperation, ValueError, OverflowError) as e:
-            logging.warning(f"Error handling decimal value {val}: {str(e)}. Setting to NULL.")
+        except (InvalidOperation, ValueError, OverflowError, TypeError) as e:
+            logging.warning(f"Error handling numeric value {val} (type: {type(val)}): {str(e)}. Setting to NULL.")
             return None
     
     # Handle date/time objects by converting to string
     elif isinstance(val, (datetime, pd.Timestamp)):
         try:
-            # Format as SQL Server compatible datetime
+            # Check for pandas NaT
             if pd.isna(val):
                 return None
             return val.strftime('%Y-%m-%d %H:%M:%S')
@@ -185,9 +251,16 @@ def _handle_decimal_value(val):
             logging.warning(f"Error formatting datetime {val}: {str(e)}. Setting to NULL.")
             return None
     
-    # Handle pandas NaT and NaN
-    elif pd.isna(val):
-        return None
+    # Handle string representations of numbers
+    elif isinstance(val, str):
+        # Check if it's a numeric string
+        try:
+            float_val = float(val)
+            # Recursively handle the converted float
+            return _handle_decimal_value(float_val)
+        except (ValueError, TypeError):
+            # Not a numeric string, return as-is
+            return val
         
     # Return value as-is for other types
     return val
