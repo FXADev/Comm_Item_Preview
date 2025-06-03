@@ -17,6 +17,11 @@ from utils.config_loader import load_query_from_file
 from utils.data_transformers import transform_row_data, log_transformation_summary
 
 
+class RedshiftConnectionError(Exception):
+    """Custom exception for Redshift connection failures"""
+    pass
+
+
 def get_redshift_connection(manual_mode=False):
     """
     Create a connection to the Redshift database.
@@ -26,6 +31,9 @@ def get_redshift_connection(manual_mode=False):
         
     Returns:
         psycopg2.connection or None: Connection object if successful, None if manual mode
+        
+    Raises:
+        RedshiftConnectionError: If connection fails (including authentication issues)
     """
     if manual_mode:
         logging.info("MANUAL MODE: Simulating Redshift connection")
@@ -48,11 +56,36 @@ def get_redshift_connection(manual_mode=False):
             port=port
         )
         
+        # Test the connection by executing a simple query
+        with conn.cursor() as cursor:
+            cursor.execute("SELECT 1")
+            cursor.fetchone()
+        
         logging.info("Connected to Redshift successfully")
         return conn
+        
+    except psycopg2.OperationalError as e:
+        error_msg = f"Redshift connection failed for user {user}@{host}. "
+        error_code = str(e)
+        
+        if "password authentication failed" in error_code.lower():
+            error_msg += "Authentication failed - please verify your username and password."
+        elif "timeout" in error_code.lower():
+            error_msg += "Connection timeout - please verify the host and port are correct."
+        elif "could not translate host name" in error_code.lower():
+            error_msg += "Invalid hostname - please verify the Redshift endpoint."
+        elif "password" in error_code.lower() and "expired" in error_code.lower():
+            error_msg += "PASSWORD EXPIRED - Please update your Redshift password."
+        else:
+            error_msg += f"Error: {error_code}"
+        
+        logging.error(error_msg)
+        raise RedshiftConnectionError(error_msg) from e
+        
     except Exception as e:
-        logging.error(f"Failed to connect to Redshift: {e}")
-        raise
+        error_msg = f"Failed to connect to Redshift: {str(e)}"
+        logging.error(error_msg)
+        raise RedshiftConnectionError(error_msg) from e
 
 
 def execute_redshift_queries(config, batch_id, manual_mode=False):
@@ -67,6 +100,9 @@ def execute_redshift_queries(config, batch_id, manual_mode=False):
     Returns:
         dict: Dictionary of query results with format:
             {query_name: {'data': transformed_rows, 'columns': column_names}}
+            
+    Raises:
+        RedshiftConnectionError: If connection to Redshift fails
     """
     results = {}
     
@@ -77,6 +113,7 @@ def execute_redshift_queries(config, batch_id, manual_mode=False):
     redshift_conn = None
     try:
         if not manual_mode:
+            # This will raise RedshiftConnectionError if connection fails
             redshift_conn = get_redshift_connection()
         
         for query_config in config['redshift']['queries']:
@@ -116,86 +153,118 @@ def execute_redshift_queries(config, batch_id, manual_mode=False):
                 log_transformation_summary(len(mock_data), len(transformed_data), 'Redshift', query_name, total_capped_values)
             else:
                 logging.info(f"Executing Redshift query: {query_name}")
-                # Execute query
-                with redshift_conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                    cursor.execute(sql)
-                    rows = cursor.fetchall()
-                    
-                    # Convert to list of lists for bulk insert (with column order preserved)
-                    raw_data_rows = []
-                    if rows:
-                        columns = list(rows[0].keys())
-                        for row in rows:
-                            raw_data_rows.append([row[col] for col in columns])
+                try:
+                    # Execute query
+                    with redshift_conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                        cursor.execute(sql)
+                        rows = cursor.fetchall()
                         
-                        logging.info(f"Redshift query {query_name} returned {len(raw_data_rows)} raw rows")
-                        
-                        # Apply data transformations
-                        logging.info(f"Applying Redshift-specific transformations to {query_name}")
-                        transformed_data_rows = []
-                        transformation_errors = 0
-                        large_value_count = 0
-                        total_capped_values = 0
-                        
-                        # Check for potentially problematic fields in this query
-                        numeric_fields = [col for col in columns if any(keyword in col.lower() for keyword in 
-                                        ['amount', 'commission', 'billed', 'payment', 'profit', 'deduction', 'override', 'rate'])]
-                        if numeric_fields:
-                            logging.info(f"Monitoring numeric fields in {query_name}: {numeric_fields}")
-                        
-                        for i, row in enumerate(raw_data_rows):
-                            try:
-                                # Check for large values before transformation
-                                for j, val in enumerate(row):
-                                    if isinstance(val, (int, float)) and val is not None:
-                                        field_name = columns[j] if j < len(columns) else f'column_{j}'
-                                        # Use appropriate limit based on field type  
-                                        if any(keyword in field_name.lower() for keyword in ['rate', 'split']):
-                                            limit = 9999.9999
-                                        else:
-                                            limit = 999999999999999.99  # decimal(18,2) limit
-                                        
-                                        if abs(val) > limit:
-                                            logging.warning(f"Row {i}, field '{field_name}': Large value detected: {val} (limit: {limit})")
-                                            large_value_count += 1
-                                
-                                transformed_row, capped_count = transform_row_data(row, columns, 'redshift')
-                                transformed_data_rows.append(transformed_row)
-                                total_capped_values += capped_count
-                            except Exception as e:
-                                logging.error(f"Error transforming row {i} in {query_name}: {e}")
-                                transformation_errors += 1
-                                # Skip problematic rows instead of crashing
-                                continue
-                        
-                        if large_value_count > 0:
-                            logging.warning(f"Found {large_value_count} values exceeding limits in {query_name}")
-                        
-                        if transformation_errors > 0:
-                            logging.warning(f"Skipped {transformation_errors} problematic rows during transformation in {query_name}")
-                        
-                        log_transformation_summary(len(raw_data_rows), len(transformed_data_rows), 'Redshift', query_name, total_capped_values)
-                        
-                        results[query_name] = {
-                            'data': transformed_data_rows,
-                            'columns': columns
-                        }
+                        # Convert to list of lists for bulk insert (with column order preserved)
+                        raw_data_rows = []
+                        if rows:
+                            columns = list(rows[0].keys())
+                            for row in rows:
+                                raw_data_rows.append([row[col] for col in columns])
+                            
+                            logging.info(f"Redshift query {query_name} returned {len(raw_data_rows)} raw rows")
+                            
+                            # Apply data transformations
+                            logging.info(f"Applying Redshift-specific transformations to {query_name}")
+                            transformed_data_rows = []
+                            transformation_errors = 0
+                            large_value_count = 0
+                            total_capped_values = 0
+                            
+                            # Check for potentially problematic fields in this query
+                            numeric_fields = [col for col in columns if any(keyword in col.lower() for keyword in 
+                                            ['amount', 'commission', 'billed', 'payment', 'profit', 'deduction', 'override', 'rate'])]
+                            if numeric_fields:
+                                logging.info(f"Monitoring numeric fields in {query_name}: {numeric_fields}")
+                            
+                            for i, row in enumerate(raw_data_rows):
+                                try:
+                                    # Check for large values before transformation
+                                    for j, val in enumerate(row):
+                                        if isinstance(val, (int, float)) and val is not None:
+                                            field_name = columns[j] if j < len(columns) else f'column_{j}'
+                                            # Use appropriate limit based on field type  
+                                            if any(keyword in field_name.lower() for keyword in ['rate', 'split']):
+                                                limit = 9999.9999
+                                            else:
+                                                limit = 999999999999999.99  # decimal(18,2) limit
+                                            
+                                            if abs(val) > limit:
+                                                logging.warning(f"Row {i}, field '{field_name}': Large value detected: {val} (limit: {limit})")
+                                                large_value_count += 1
+                                    
+                                    transformed_row, capped_count = transform_row_data(row, columns, 'redshift')
+                                    transformed_data_rows.append(transformed_row)
+                                    total_capped_values += capped_count
+                                except Exception as e:
+                                    logging.error(f"Error transforming row {i} in {query_name}: {e}")
+                                    transformation_errors += 1
+                                    # Skip problematic rows instead of crashing
+                                    continue
+                            
+                            if large_value_count > 0:
+                                logging.warning(f"Found {large_value_count} values exceeding limits in {query_name}")
+                            
+                            if transformation_errors > 0:
+                                logging.warning(f"Skipped {transformation_errors} problematic rows during transformation in {query_name}")
+                            
+                            log_transformation_summary(len(raw_data_rows), len(transformed_data_rows), 'Redshift', query_name, total_capped_values)
+                            
+                            results[query_name] = {
+                                'data': transformed_data_rows,
+                                'columns': columns
+                            }
+                        else:
+                            columns = []
+                            logging.warning(f"Redshift query {query_name} returned no rows")
+                            results[query_name] = {
+                                'data': [],
+                                'columns': []
+                            }
+                            
+                except psycopg2.OperationalError as query_error:
+                    # Check for connection-related errors during query execution
+                    error_msg = str(query_error)
+                    if any(phrase in error_msg.lower() for phrase in ["connection", "timeout", "closed", "terminated"]):
+                        connection_error_msg = f"Redshift connection lost while executing query {query_name}: {error_msg}"
+                        logging.error(connection_error_msg)
+                        raise RedshiftConnectionError(connection_error_msg) from query_error
                     else:
-                        columns = []
-                        logging.warning(f"Redshift query {query_name} returned no rows")
-                        results[query_name] = {
-                            'data': [],
-                            'columns': []
-                        }
+                        # Re-raise other operational errors
+                        raise
+                        
+                except psycopg2.ProgrammingError as query_error:
+                    # Check for permission/access errors
+                    error_msg = str(query_error)
+                    if "permission denied" in error_msg.lower():
+                        permission_error_msg = f"Permission denied accessing Redshift table in query {query_name}. Please verify user permissions."
+                        logging.error(permission_error_msg)
+                        raise RedshiftConnectionError(permission_error_msg) from query_error
+                    else:
+                        # Re-raise other programming errors
+                        raise
         
         return results
     
+    except RedshiftConnectionError:
+        # Re-raise connection errors to fail the ETL process
+        raise
+    
     except Exception as e:
-        logging.error(f"Error executing Redshift queries: {e}")
-        return {}
+        error_msg = f"Unexpected error executing Redshift queries: {str(e)}"
+        logging.error(error_msg)
+        # Convert unexpected errors to connection errors to fail the process
+        raise RedshiftConnectionError(error_msg) from e
     
     finally:
         # Close connection if it was opened
         if redshift_conn and not manual_mode:
-            redshift_conn.close()
-            logging.info("Redshift connection closed")
+            try:
+                redshift_conn.close()
+                logging.info("Redshift connection closed")
+            except Exception as close_error:
+                logging.warning(f"Error closing Redshift connection: {close_error}")
