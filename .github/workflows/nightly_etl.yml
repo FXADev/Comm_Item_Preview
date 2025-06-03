@@ -2,8 +2,8 @@ name: Nightly ETL Process
 
 on:
   schedule:
-    # Run at 5:00 AM EST (10:00 UTC)
-    - cron: '0 10 * * *'
+    # Run at 9:30 AM EST (13:30 UTC)
+    - cron: '0 13 * * *'
   workflow_dispatch:
     # Allow manual trigger
 
@@ -41,6 +41,7 @@ jobs:
         echo "branch=${{ github.ref_name }}" >> $GITHUB_ENV
 
     - name: Run ETL process
+      id: etl
       env:
         # Use GitHub secrets for all credentials
         REDSHIFT_HOST: ${{ secrets.REDSHIFT_HOST }}
@@ -59,9 +60,29 @@ jobs:
         SQL_DRIVER: ${{ secrets.SQL_DRIVER }}
         OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       run: |
-        python etl_main.py
+        # Capture both stdout and stderr, and the exit code
+        python etl_main.py 2>&1 | tee etl_output.log
+        echo "etl_exit_code=${PIPESTATUS[0]}" >> $GITHUB_ENV
+        
+        # Check for specific error patterns
+        if grep -q "REDSHIFT CONNECTION FAILURE" etl_output.log; then
+          echo "error_type=REDSHIFT_CONNECTION" >> $GITHUB_ENV
+          echo "ETL failed due to Redshift connection error"
+        elif grep -q "SALESFORCE CONNECTION FAILURE" etl_output.log; then
+          echo "error_type=SALESFORCE_CONNECTION" >> $GITHUB_ENV
+          echo "ETL failed due to Salesforce connection error"
+        elif grep -q "PASSWORD EXPIRED" etl_output.log; then
+          echo "error_type=PASSWORD_EXPIRED" >> $GITHUB_ENV
+          echo "ETL failed due to expired password"
+        else
+          echo "error_type=GENERAL" >> $GITHUB_ENV
+        fi
+        
+        # Exit with the same code as the ETL process
+        exit ${PIPESTATUS[0]}
         
     - name: Record end time
+      if: always()
       run: echo "endTime=$(date +'%Y-%m-%d %H:%M:%S UTC')" >> $GITHUB_ENV
         
     - name: Generate ETL metrics for email
@@ -133,7 +154,7 @@ jobs:
         # Use the exact secret names created in GitHub
         username: ${{ secrets.smtp_username }}
         password: ${{ secrets.smtp_password }}
-        subject: "⚠️ Commission Preview ETL Failure"
+        subject: "⚠️ Commission Preview ETL Failure - ${{ env.error_type }}"
         body: |
           ## ⚠️ Commission Preview ETL Failure
           
@@ -145,10 +166,55 @@ jobs:
           **End time:** ${{ env.endTime }}
           
           ### Error Information
-          Please check the GitHub Actions logs for detailed error messages.
+          **Error Type:** ${{ env.error_type }}
           
-          ### View the full run details:
+          {% if env.error_type == 'REDSHIFT_CONNECTION' %}
+          ### 🔴 Redshift Connection Failed
+          
+          The ETL process could not connect to Redshift. This could be due to:
+          - Invalid credentials (username/password)
+          - Expired password
+          - Network connectivity issues
+          - Incorrect host/port configuration
+          
+          **Action Required:**
+          1. Verify REDSHIFT_USER and REDSHIFT_PASSWORD in GitHub Secrets
+          2. Check if the Redshift password has expired
+          3. Verify REDSHIFT_HOST and REDSHIFT_PORT are correct
+          {% elsif env.error_type == 'SALESFORCE_CONNECTION' %}
+          ### 🔴 Salesforce Connection Failed
+          
+          The ETL process could not connect to Salesforce. This could be due to:
+          - Invalid credentials (username/password/security token)
+          - Expired password
+          - IP restrictions on the Salesforce org
+          - Invalid or expired security token
+          
+          **Action Required:**
+          1. Verify SF_USERNAME and SF_PASSWORD in GitHub Secrets
+          2. Check if the Salesforce password has expired
+          3. Verify SF_SECURITY_TOKEN is current (reset if needed)
+          4. Check Salesforce login history for more details
+          {% elsif env.error_type == 'PASSWORD_EXPIRED' %}
+          ### 🔴 Password Expired
+          
+          One or more database passwords have expired.
+          
+          **Action Required:**
+          1. Update the expired password(s) in the respective system
+          2. Update the corresponding GitHub Secret(s)
+          3. Re-run the ETL process
+          {% else %}
+          Please check the GitHub Actions logs for detailed error messages.
+          {% endif %}
+          
+          ### View the full run details and logs:
           https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          
+          ### Recent ETL Output:
+          ```
+          Check the Action logs for detailed error output
+          ```
         # Send emails to all recipients in the notification list
         to: ${{ secrets.NOTIFICATION_EMAILS }}
         from: Commission ETL <noreply@bridgepointetechnologies.com>

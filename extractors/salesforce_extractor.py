@@ -10,10 +10,16 @@ import os
 import logging
 import pandas as pd
 from simple_salesforce import Salesforce
+from simple_salesforce.exceptions import SalesforceAuthenticationFailed
 
 # Import utilities
 from utils.config_loader import load_query_from_file
 from utils.data_transformers import transform_row_data, log_transformation_summary
+
+
+class SalesforceConnectionError(Exception):
+    """Custom exception for Salesforce connection failures"""
+    pass
 
 
 def get_salesforce_connection(manual_mode=False):
@@ -25,6 +31,9 @@ def get_salesforce_connection(manual_mode=False):
         
     Returns:
         Salesforce or None: Salesforce connection object if successful, None if manual mode
+        
+    Raises:
+        SalesforceConnectionError: If connection fails (including authentication issues)
     """
     if manual_mode:
         logging.info("MANUAL MODE: Simulating Salesforce connection")
@@ -45,9 +54,25 @@ def get_salesforce_connection(manual_mode=False):
         
         logging.info("Connected to Salesforce successfully")
         return sf
+        
+    except SalesforceAuthenticationFailed as e:
+        error_msg = f"Salesforce authentication failed for user {username}. "
+        if "INVALID_LOGIN" in str(e):
+            error_msg += "Invalid username, password, or security token. "
+            if "password expired" in str(e).lower():
+                error_msg += "PASSWORD EXPIRED - Please update your Salesforce password."
+            else:
+                error_msg += "Please verify your credentials are correct."
+        else:
+            error_msg += f"Error: {str(e)}"
+        
+        logging.error(error_msg)
+        raise SalesforceConnectionError(error_msg) from e
+        
     except Exception as e:
-        logging.error(f"Failed to connect to Salesforce: {e}")
-        raise
+        error_msg = f"Failed to connect to Salesforce: {str(e)}"
+        logging.error(error_msg)
+        raise SalesforceConnectionError(error_msg) from e
 
 
 def _process_salesforce_value(value):
@@ -89,6 +114,9 @@ def execute_salesforce_queries(config, batch_id, manual_mode=False):
     Returns:
         dict: Dictionary of query results with format:
             {query_name: {'data': transformed_rows, 'columns': column_names}}
+            
+    Raises:
+        SalesforceConnectionError: If connection to Salesforce fails
     """
     results = {}
     
@@ -99,6 +127,7 @@ def execute_salesforce_queries(config, batch_id, manual_mode=False):
     sf = None
     try:
         if not manual_mode:
+            # This will raise SalesforceConnectionError if connection fails
             sf = get_salesforce_connection()
         
         for query_config in config['salesforce']['queries']:
@@ -138,79 +167,96 @@ def execute_salesforce_queries(config, batch_id, manual_mode=False):
                 log_transformation_summary(len(mock_data), len(transformed_data), 'Salesforce', query_name, total_capped_values)
             else:
                 logging.info(f"Executing Salesforce query: {query_name}")
-                # Execute query with pagination support
-                sf_result = sf.query_all(soql)
-                records = sf_result.get('records', [])
-                
-                if not records:
-                    logging.warning(f"Salesforce query {query_name} returned no records")
-                    results[query_name] = {
-                        'data': [],
-                        'columns': []
-                    }
-                    continue
-                
-                # Process records to standardize format (remove Salesforce metadata)
-                processed_records = []
-                for record in records:
-                    # Remove Salesforce metadata attributes
-                    record.pop('attributes', None)
-                    processed_records.append(record)
-                
-                # Extract columns and convert to list of lists
-                if processed_records:
-                    columns = list(processed_records[0].keys())
+                try:
+                    # Execute query with pagination support
+                    sf_result = sf.query_all(soql)
+                    records = sf_result.get('records', [])
                     
-                    # Convert to list of lists and process Salesforce-specific values
-                    raw_data_rows = []
-                    for record in processed_records:
-                        row_data = []
-                        for col in columns:
-                            value = record.get(col)
-                            processed_value = _process_salesforce_value(value)
-                            row_data.append(processed_value)
-                        raw_data_rows.append(row_data)
+                    if not records:
+                        logging.warning(f"Salesforce query {query_name} returned no records")
+                        results[query_name] = {
+                            'data': [],
+                            'columns': []
+                        }
+                        continue
                     
-                    logging.info(f"Salesforce query {query_name} returned {len(raw_data_rows)} raw rows")
+                    # Process records to standardize format (remove Salesforce metadata)
+                    processed_records = []
+                    for record in records:
+                        # Remove Salesforce metadata attributes
+                        record.pop('attributes', None)
+                        processed_records.append(record)
                     
-                    # Apply Salesforce-specific transformations
-                    logging.info(f"Applying Salesforce-specific transformations to {query_name}")
-                    transformed_data_rows = []
-                    transformation_errors = 0
-                    total_capped_values = 0
-                    
-                    for i, row in enumerate(raw_data_rows):
-                        try:
-                            transformed_row, capped_count = transform_row_data(row, columns, 'salesforce')
-                            transformed_data_rows.append(transformed_row)
-                            total_capped_values += capped_count
-                        except Exception as e:
-                            logging.error(f"Error transforming row {i} in {query_name}: {e}")
-                            transformation_errors += 1
-                            # Skip problematic rows instead of crashing
-                            continue
-                    
-                    if transformation_errors > 0:
-                        logging.warning(f"Skipped {transformation_errors} problematic rows during transformation in {query_name}")
-                    
-                    log_transformation_summary(len(raw_data_rows), len(transformed_data_rows), 'Salesforce', query_name, total_capped_values)
-                    
-                    results[query_name] = {
-                        'data': transformed_data_rows,
-                        'columns': columns
-                    }
-                else:
-                    logging.warning(f"No valid records found in Salesforce query {query_name}")
-                    results[query_name] = {
-                        'data': [],
-                        'columns': []
-                    }
+                    # Extract columns and convert to list of lists
+                    if processed_records:
+                        columns = list(processed_records[0].keys())
+                        
+                        # Convert to list of lists and process Salesforce-specific values
+                        raw_data_rows = []
+                        for record in processed_records:
+                            row_data = []
+                            for col in columns:
+                                value = record.get(col)
+                                processed_value = _process_salesforce_value(value)
+                                row_data.append(processed_value)
+                            raw_data_rows.append(row_data)
+                        
+                        logging.info(f"Salesforce query {query_name} returned {len(raw_data_rows)} raw rows")
+                        
+                        # Apply Salesforce-specific transformations
+                        logging.info(f"Applying Salesforce-specific transformations to {query_name}")
+                        transformed_data_rows = []
+                        transformation_errors = 0
+                        total_capped_values = 0
+                        
+                        for i, row in enumerate(raw_data_rows):
+                            try:
+                                transformed_row, capped_count = transform_row_data(row, columns, 'salesforce')
+                                transformed_data_rows.append(transformed_row)
+                                total_capped_values += capped_count
+                            except Exception as e:
+                                logging.error(f"Error transforming row {i} in {query_name}: {e}")
+                                transformation_errors += 1
+                                # Skip problematic rows instead of crashing
+                                continue
+                        
+                        if transformation_errors > 0:
+                            logging.warning(f"Skipped {transformation_errors} problematic rows during transformation in {query_name}")
+                        
+                        log_transformation_summary(len(raw_data_rows), len(transformed_data_rows), 'Salesforce', query_name, total_capped_values)
+                        
+                        results[query_name] = {
+                            'data': transformed_data_rows,
+                            'columns': columns
+                        }
+                    else:
+                        logging.warning(f"No valid records found in Salesforce query {query_name}")
+                        results[query_name] = {
+                            'data': [],
+                            'columns': []
+                        }
+                        
+                except Exception as query_error:
+                    # Check if this is a session expired error
+                    if "Session expired" in str(query_error) or "INVALID_SESSION_ID" in str(query_error):
+                        error_msg = f"Salesforce session expired while executing query {query_name}. This may indicate an authentication issue."
+                        logging.error(error_msg)
+                        raise SalesforceConnectionError(error_msg) from query_error
+                    else:
+                        # Re-raise other query errors
+                        raise
         
         return results
     
+    except SalesforceConnectionError:
+        # Re-raise connection errors to fail the ETL process
+        raise
+    
     except Exception as e:
-        logging.error(f"Error executing Salesforce queries: {e}")
-        return {}
+        error_msg = f"Unexpected error executing Salesforce queries: {str(e)}"
+        logging.error(error_msg)
+        # Convert unexpected errors to connection errors to fail the process
+        raise SalesforceConnectionError(error_msg) from e
     
     finally:
         # No need to explicitly close Salesforce connection
