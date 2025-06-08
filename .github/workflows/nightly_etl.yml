@@ -2,8 +2,8 @@ name: Nightly ETL Process
 
 on:
   schedule:
-    # Run at 9:30 AM EST (13:30 UTC)
-    - cron: '0 13 * * *'
+    # Run at 5:30 AM EST (10:30 UTC)
+    - cron: '30 10 * * *'
   workflow_dispatch:
     # Allow manual trigger
 
