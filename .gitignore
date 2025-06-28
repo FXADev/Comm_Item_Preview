@@ -40,3 +40,4 @@ logs/
 .DS_Store
 # Add this to your .gitignore
 .sfdx/
+metrics/
